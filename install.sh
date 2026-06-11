@@ -95,11 +95,17 @@ cat > "$PLIST" <<PLIST_EOF
 </plist>
 PLIST_EOF
 
-# Reload: bootout if already loaded, then bootstrap into the GUI session.
+# Reload into the GUI session. bootout is asynchronous, so wait for the old
+# instance to finish tearing down before bootstrapping — otherwise bootstrap
+# races it and fails with "Input/output error" (5).
 GUI="gui/$(id -u)"
 launchctl bootout "$GUI/$LABEL" 2>/dev/null || true
+for _ in $(seq 1 20); do
+  launchctl print "$GUI/$LABEL" >/dev/null 2>&1 || break
+  sleep 0.5
+done
 launchctl bootstrap "$GUI" "$PLIST"
-launchctl kickstart -k "$GUI/$LABEL" 2>/dev/null || true
+launchctl kickstart "$GUI/$LABEL" 2>/dev/null || true
 
 cat <<DONE
 
