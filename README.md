@@ -23,7 +23,8 @@ Swift binary — for a short label. It never overrides a name you set by hand, a
 only renames when a tab's content or siblings change.
 
 Tune the constants at the top of `tab_namer.py`: `INTERVAL`, `MAX_COMMANDS`,
-`MAX_TITLE_LEN`. Logs appear in iTerm2 → Scripts → Manage → Console.
+`MAX_TITLE_LEN`, and `OVERRIDE_MANUAL_NAMES` (set to `True` to also rename tabs
+you renamed by hand). Logs appear in iTerm2 → Scripts → Manage → Console.
 
 ## Uninstall
 

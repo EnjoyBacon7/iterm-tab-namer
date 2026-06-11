@@ -47,6 +47,14 @@ class TestIsFreeToName(unittest.TestCase):
     def test_owned_then_changed_is_manual(self):
         self.assertFalse(tn.is_free_to_name("Human Renamed", "zsh", "Default", "Auth Bug"))
 
+    def test_override_claims_manual_names(self):
+        self.assertTrue(
+            tn.is_free_to_name("Human Renamed", "zsh", "Default", "Auth Bug", override=True)
+        )
+        self.assertTrue(
+            tn.is_free_to_name("My Important Tab", "zsh", "Default", None, override=True)
+        )
+
 
 class TestContextSignature(unittest.TestCase):
     def test_changes_with_cwd(self):

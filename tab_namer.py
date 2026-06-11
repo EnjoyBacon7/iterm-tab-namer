@@ -35,6 +35,11 @@ MAX_TITLE_LEN = 28     # hard cap on the generated label length
 NAMER_BIN = os.path.expanduser("~/github/iterm-tab-namer/tabnamer")
 NAMER_TIMEOUT = 20     # seconds to wait for the model
 
+# When True, manage every tab's name even if a human renamed it (the daemon
+# re-asserts its own name). When False (default), a tab a human renamed is left
+# alone for the rest of the session.
+OVERRIDE_MANUAL_NAMES = False
+
 # Names we treat as "not human-set", so we're free to claim the tab. The shell
 # job name and the profile name are added per-session at runtime.
 DEFAULT_NAMES = {"", "zsh", "-zsh", "bash", "-bash", "fish", "Shell", "login"}
@@ -115,12 +120,15 @@ def sanitize_title(raw):
     return line
 
 
-def is_free_to_name(name, job, profile, our_name):
+def is_free_to_name(name, job, profile, our_name, override=False):
     """Whether we may set this tab's name.
 
     `our_name` is the last name we set (None if we never named it). A tab whose
-    name no longer matches what we set has been taken over by a human.
+    name no longer matches what we set has been taken over by a human. When
+    `override` is True we manage every tab regardless of human edits.
     """
+    if override:
+        return True
     n = (name or "").strip()
     if our_name is not None:
         return n == our_name.strip()
@@ -249,8 +257,9 @@ async def gather_meta(daemon, session):
     name = (await session.async_get_variable("name")) or ""
     profile = await session.async_get_variable("profileName")
     st = daemon.sessions.setdefault(sid, SessionState())
-    # A human took this tab over → hands off for the rest of the session.
-    if st.our_name is not None and name != st.our_name:
+    # A human took this tab over → hands off for the rest of the session
+    # (unless we're configured to override manual names).
+    if not OVERRIDE_MANUAL_NAMES and st.our_name is not None and name != st.our_name:
         daemon.hands_off.add(sid)
         return None
     root = await git_root(cwd, daemon.git_cache)
@@ -263,7 +272,10 @@ async def gather_meta(daemon, session):
 
 async def maybe_rename(meta, group):
     st = meta["st"]
-    if not is_free_to_name(meta["name"], meta["job"], meta["profile"], st.our_name):
+    if not is_free_to_name(
+        meta["name"], meta["job"], meta["profile"], st.our_name,
+        override=OVERRIDE_MANUAL_NAMES,
+    ):
         return
     cwd, cmds = meta["cwd"], meta["cmds"]
     if not cwd and not cmds:
@@ -273,7 +285,12 @@ async def maybe_rename(meta, group):
     siblings = [o for o in group if o["sid"] != meta["sid"]]
     sib_pairs = [(o["name"], o["cmds"][-1] if o["cmds"] else "") for o in siblings]
     sib_sig = tuple(sorted(n for n, _ in sib_pairs))
-    if st.last_sig == sig and st.last_sibling_sig == sib_sig:
+    changed = st.last_sig != sig or st.last_sibling_sig != sib_sig
+    # In override mode, also re-name if a human changed the displayed name, so
+    # the daemon re-asserts control even when the content itself didn't change.
+    if OVERRIDE_MANUAL_NAMES and st.our_name is not None and meta["name"] != st.our_name:
+        changed = True
+    if not changed:
         return
 
     prompt = build_prompt(
