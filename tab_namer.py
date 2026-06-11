@@ -44,6 +44,20 @@ OVERRIDE_MANUAL_NAMES = False
 # job name and the profile name are added per-session at runtime.
 DEFAULT_NAMES = {"", "zsh", "-zsh", "bash", "-bash", "fish", "Shell", "login"}
 
+# Runtime config, seeded from the constants above. The optional status bar
+# component (see register_status_bar) updates this live from iTerm2's
+# "Configure Component" dialog. The daemon works with these defaults even if the
+# component is never added to a status bar.
+CONFIG = {
+    "enabled": True,
+    "override": OVERRIDE_MANUAL_NAMES,
+    "interval": INTERVAL,
+}
+
+KNOB_ENABLED = "tabnamer_enabled"
+KNOB_OVERRIDE = "tabnamer_override"
+KNOB_INTERVAL = "tabnamer_interval"
+
 
 # ----------------------------------------------------------------------------
 # Pure logic (no iTerm2 dependency) — unit tested.
@@ -259,7 +273,7 @@ async def gather_meta(daemon, session):
     st = daemon.sessions.setdefault(sid, SessionState())
     # A human took this tab over → hands off for the rest of the session
     # (unless we're configured to override manual names).
-    if not OVERRIDE_MANUAL_NAMES and st.our_name is not None and name != st.our_name:
+    if not CONFIG["override"] and st.our_name is not None and name != st.our_name:
         daemon.hands_off.add(sid)
         return None
     root = await git_root(cwd, daemon.git_cache)
@@ -274,7 +288,7 @@ async def maybe_rename(meta, group):
     st = meta["st"]
     if not is_free_to_name(
         meta["name"], meta["job"], meta["profile"], st.our_name,
-        override=OVERRIDE_MANUAL_NAMES,
+        override=CONFIG["override"],
     ):
         return
     cwd, cmds = meta["cwd"], meta["cmds"]
@@ -288,7 +302,7 @@ async def maybe_rename(meta, group):
     changed = st.last_sig != sig or st.last_sibling_sig != sib_sig
     # In override mode, also re-name if a human changed the displayed name, so
     # the daemon re-asserts control even when the content itself didn't change.
-    if OVERRIDE_MANUAL_NAMES and st.our_name is not None and meta["name"] != st.our_name:
+    if CONFIG["override"] and st.our_name is not None and meta["name"] != st.our_name:
         changed = True
     if not changed:
         return
@@ -331,9 +345,47 @@ async def sweep(app, daemon):
             await maybe_rename(meta, group)
 
 
+async def register_status_bar(connection):
+    """Optional: expose settings in iTerm2's native 'Configure Component' dialog.
+
+    Add the "Tab Namer" component to a profile's status bar to get a checkbox
+    for Enabled, a checkbox for overriding manual names, and the sweep interval.
+    The component is just a config host; the daemon runs fine without it.
+    """
+
+    @iterm2.StatusBarRPC
+    async def render(knobs):
+        CONFIG["enabled"] = bool(knobs.get(KNOB_ENABLED, CONFIG["enabled"]))
+        CONFIG["override"] = bool(knobs.get(KNOB_OVERRIDE, CONFIG["override"]))
+        try:
+            CONFIG["interval"] = max(10.0, float(knobs.get(KNOB_INTERVAL, CONFIG["interval"])))
+        except (TypeError, ValueError):
+            pass
+        return "🏷 on" if CONFIG["enabled"] else "🏷 off"
+
+    try:
+        component = iterm2.StatusBarComponent(
+            short_description="Tab Namer",
+            detailed_description="Auto-rename tabs from their content. Configure behavior here.",
+            knobs=[
+                iterm2.CheckboxKnob("Enabled", True, KNOB_ENABLED),
+                iterm2.CheckboxKnob("Override manually-set names", OVERRIDE_MANUAL_NAMES, KNOB_OVERRIDE),
+                iterm2.PositiveFloatingPointKnob("Sweep interval (seconds)", INTERVAL, KNOB_INTERVAL),
+            ],
+            exemplar="🏷 on",
+            update_cadence=None,
+            identifier="com.enjoybacon.iterm-tab-namer",
+        )
+        await component.async_register(connection, render)
+    except Exception as exc:
+        print(f"status bar component registration failed: {exc}")
+
+
 async def main(connection):
     app = await iterm2.async_get_app(connection)
     daemon = Daemon()
+
+    await register_status_bar(connection)
 
     for window in app.windows:
         for tab in window.tabs:
@@ -357,10 +409,11 @@ async def main(connection):
 
     while True:
         try:
-            await sweep(app, daemon)
+            if CONFIG["enabled"]:
+                await sweep(app, daemon)
         except Exception as exc:
             print(f"sweep error: {exc}")
-        await asyncio.sleep(INTERVAL)
+        await asyncio.sleep(CONFIG["interval"])
 
 
 if __name__ == "__main__" and iterm2 is not None:
