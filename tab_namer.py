@@ -21,6 +21,7 @@ outside iTerm2's runtime for testing.
 
 import asyncio
 import os
+import re
 from collections import deque
 
 try:
@@ -32,7 +33,7 @@ except Exception:  # pragma: no cover - only available inside iTerm2's runtime
 INTERVAL = 90          # seconds between naming sweeps
 MAX_COMMANDS = 3       # number of recent commands fed to the model
 MAX_TITLE_LEN = 28     # hard cap on the generated label length
-NAMER_BIN = os.path.expanduser("~/github/iterm-tab-namer/tabnamer")
+NAMER_BIN = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tabnamer")
 NAMER_TIMEOUT = 20     # seconds to wait for the model
 
 # When True, manage every tab's name even if a human renamed it (the daemon
@@ -43,6 +44,32 @@ OVERRIDE_MANUAL_NAMES = False
 # Names we treat as "not human-set", so we're free to claim the tab. The shell
 # job name and the profile name are added per-session at runtime.
 DEFAULT_NAMES = {"", "zsh", "-zsh", "bash", "-bash", "fish", "Shell", "login"}
+
+# Commands that carry no signal about what a tab is for — navigation and
+# housekeeping. A tab whose only activity is these is named after its directory
+# rather than sent to the model (which produces noise from such thin context).
+TRIVIAL_COMMANDS = {
+    "cd", "ls", "ll", "la", "l", "pwd", "clear", "cls", "exit", "z", "j",
+    "popd", "pushd", "dirs", "history", "..", "...", "cd..",
+}
+
+# The small on-device model often wraps its answer in boilerplate ("Terminal:
+# Dev", "Directory Downloads", "Terminal Label: ...") or refuses outright. We
+# strip these prefixes and reject non-labels so junk never becomes a tab name.
+_META_PREFIX_RE = re.compile(
+    r"^(?:terminal label|terminal|directory|folder|label|tab name|tab|name|title)"
+    r"\s*[:\-–]?\s+",
+    re.IGNORECASE,
+)
+_GARBAGE_EXACT = {
+    "terminal", "directory", "folder", "label", "tab", "name", "title",
+    "untitled", "shell", "apple", "none", "unknown", "na",
+}
+_GARBAGE_SUBSTRINGS = (
+    "no applicable", "foundation model", "i can't", "i cannot",
+    "cannot determine", "unable to", "as an ai", "sorry",
+)
+_HOME = os.path.expanduser("~")
 
 # Runtime config, seeded from the constants above. The optional status bar
 # component (see register_status_bar) updates this live from iTerm2's
@@ -103,20 +130,72 @@ def build_sibling_block(siblings):
     return "\n".join(out)
 
 
+# Delimiter between the instructions and the per-tab prompt on the namer's
+# stdin (must match the sentinel in tabnamer.swift).
+PROMPT_SENTINEL = "<<<PROMPT>>>"
+
+# The model's system instructions. Apple's Foundation Models obey instructions
+# over anything in the prompt, so all the durable guidance lives here. The
+# examples are written in the exact format build_self_block/build_prompt emit,
+# which is what keeps this small model on-task.
+INSTRUCTIONS = """\
+You generate a name for a macOS terminal tab. The name tells the user, at a
+glance, what work is happening in that tab.
+
+You receive the tab's working directory and its most recent shell commands, and
+sometimes a list of other tabs in the same project. Infer the SPECIFIC thing
+being worked on — a feature, a bug, a service, a file, a dataset, a deploy — and
+name the tab after that work.
+
+Rules:
+- Output ONLY the label. No preamble, no explanation, no quotes, no
+  punctuation, no trailing period.
+- Exactly 2 to 4 words, Title Case. Never a single word.
+- Name the WORK, not the tooling. Prefer "Webhook Retry Fix" over "Running
+  Pytest". Never name it after the shell, the terminal, the directory listing,
+  or the model itself.
+- Never begin with filler words: Terminal, Directory, Folder, Label, Tab,
+  Session, Name, Title, or Running.
+- Stay grounded in what you are given. Do not invent specifics that the
+  directory and commands do not support. When the directory is the only real
+  signal, name the tab after that project or folder.
+- When other tabs are listed, make THIS label clearly distinct from them,
+  emphasizing what is unique about this tab's work.
+
+Examples:
+
+This tab:
+  directory: payments-api (subdir: src/webhooks)
+  recent commands:
+    - pytest tests/test_stripe.py
+    - git commit -m "retry failed webhooks"
+Stripe Webhook Retries
+
+This tab:
+  directory: blog
+  recent commands:
+    - npm run build
+    - vercel deploy --prod
+Blog Production Deploy
+
+This tab:
+  directory: kernel (subdir: drivers/net)
+  recent commands:
+    - make modules
+    - dmesg | grep eth0
+Net Driver Debugging
+
+This tab:
+  directory: notes
+  recent commands:
+    - vim 2026-budget.md
+Annual Budget Notes"""
+
+
 def build_prompt(self_block, sibling_block):
-    parts = [
-        "You name terminal tabs with a short, specific label.",
-        "",
-        "This tab:",
-        self_block,
-    ]
+    parts = ["This tab:", self_block]
     if sibling_block:
         parts += ["", sibling_block]
-    parts += [
-        "",
-        "Reply with ONLY a 2-4 word Title Case label. "
-        "No quotes, no punctuation, no explanation.",
-    ]
     return "\n".join(parts)
 
 
@@ -132,6 +211,59 @@ def sanitize_title(raw):
     if len(line) > MAX_TITLE_LEN:
         line = line[:MAX_TITLE_LEN].rstrip()
     return line
+
+
+def meaningful_commands(commands):
+    """Drop navigation/housekeeping commands that say nothing about the work."""
+    out = []
+    for c in commands:
+        c = (c or "").strip()
+        if not c:
+            continue
+        if c.split()[0] in TRIVIAL_COMMANDS:
+            continue
+        out.append(c)
+    return out
+
+
+def directory_label(cwd, project_root):
+    """A clean, deterministic tab name derived from the folder (no model)."""
+    path = project_root or cwd or ""
+    if path and os.path.abspath(path) == _HOME:
+        return ""  # don't name a tab after the home directory
+    base = basename(project_root) if project_root else basename(cwd)
+    base = (base or "").strip()
+    if base in ("", "~"):
+        return ""
+    if len(base) > MAX_TITLE_LEN:
+        base = base[:MAX_TITLE_LEN].rstrip()
+    return base
+
+
+def clean_model_label(raw):
+    """Turn a raw model response into a usable label, or "" if it's not one.
+
+    Strips boilerplate prefixes the small model tends to add and rejects
+    refusals / generic non-answers so they never get applied as a tab name.
+    """
+    if not raw or not raw.strip():
+        return ""
+    line = raw.strip().splitlines()[0].strip(" \t\"'`.!,:;")
+    line = " ".join(line.split())
+    # Strip leading boilerplate, possibly stacked ("Terminal Label: Directory X").
+    prev = None
+    while line and line != prev:
+        prev = line
+        line = _META_PREFIX_RE.sub("", line).strip()
+    label = sanitize_title(line)  # final trim / collapse / length cap
+    if not label:
+        return ""
+    low = label.lower()
+    if len(low) < 2 or low in _GARBAGE_EXACT:
+        return ""
+    if any(s in low for s in _GARBAGE_SUBSTRINGS):
+        return ""
+    return label
 
 
 def is_free_to_name(name, job, profile, our_name, override=False):
@@ -210,6 +342,7 @@ async def git_root(cwd, cache):
 
 
 async def run_namer(prompt):
+    payload = f"{INSTRUCTIONS}\n{PROMPT_SENTINEL}\n{prompt}"
     try:
         proc = await asyncio.create_subprocess_exec(
             NAMER_BIN,
@@ -218,7 +351,7 @@ async def run_namer(prompt):
             stderr=asyncio.subprocess.DEVNULL,
         )
         out, _ = await asyncio.wait_for(
-            proc.communicate(prompt.encode()), timeout=NAMER_TIMEOUT
+            proc.communicate(payload.encode()), timeout=NAMER_TIMEOUT
         )
         if proc.returncode != 0:
             return ""
@@ -291,13 +424,17 @@ async def maybe_rename(meta, group):
         override=CONFIG["override"],
     ):
         return
-    cwd, cmds = meta["cwd"], meta["cmds"]
+    cwd = meta["cwd"]
+    cmds = meaningful_commands(meta["cmds"])
+    dir_label = directory_label(cwd, meta["root"])
     if not cwd and not cmds:
         return
 
     sig = context_signature(cwd, cmds)
     siblings = [o for o in group if o["sid"] != meta["sid"]]
-    sib_pairs = [(o["name"], o["cmds"][-1] if o["cmds"] else "") for o in siblings]
+    sib_pairs = [
+        (o["name"], (meaningful_commands(o["cmds"]) or [""])[-1]) for o in siblings
+    ]
     sib_sig = tuple(sorted(n for n, _ in sib_pairs))
     changed = st.last_sig != sig or st.last_sibling_sig != sib_sig
     # In override mode, also re-name if a human changed the displayed name, so
@@ -307,11 +444,18 @@ async def maybe_rename(meta, group):
     if not changed:
         return
 
-    prompt = build_prompt(
-        build_self_block(cwd, meta["root"], cmds),
-        build_sibling_block(sib_pairs),
-    )
-    title = sanitize_title(await run_namer(prompt))
+    # With no real activity yet, name the tab after its folder rather than
+    # asking the model (which produces noise from such thin context). Once
+    # meaningful commands exist, ask the model and fall back to the folder name
+    # if it returns boilerplate or a refusal.
+    if not cmds:
+        title = dir_label
+    else:
+        prompt = build_prompt(
+            build_self_block(cwd, meta["root"], cmds),
+            build_sibling_block(sib_pairs),
+        )
+        title = clean_model_label(await run_namer(prompt)) or dir_label
     if not title:
         return
     try:
@@ -351,6 +495,13 @@ async def register_status_bar(connection):
     Add the "Tab Namer" component to a profile's status bar to get a checkbox
     for Enabled, a checkbox for overriding manual names, and the sweep interval.
     The component is just a config host; the daemon runs fine without it.
+
+    It renders an empty string, so once added it takes no visible space in the
+    status bar — but its knobs stay reachable via the gear in iTerm2's
+    "Configure Status Bar" editor. That gives you in-iTerm configuration without
+    a permanent chip. (The component must remain in the layout for the knobs to
+    take effect: `render` is what writes knob values into CONFIG, and it only
+    runs while the component is part of a live status bar.)
     """
 
     @iterm2.StatusBarRPC
@@ -361,7 +512,9 @@ async def register_status_bar(connection):
             CONFIG["interval"] = max(10.0, float(knobs.get(KNOB_INTERVAL, CONFIG["interval"])))
         except (TypeError, ValueError):
             pass
-        return "🏷 on" if CONFIG["enabled"] else "🏷 off"
+        # Render nothing: invisible in the status bar, still configurable via the
+        # Configure Status Bar editor's gear.
+        return ""
 
     try:
         component = iterm2.StatusBarComponent(

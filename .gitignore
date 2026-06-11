@@ -1,4 +1,6 @@
 /tabnamer
+/.venv/
+/tabnamer.log
 *.o
 __pycache__/
 *.pyc

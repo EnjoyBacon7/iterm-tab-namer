@@ -1,12 +1,25 @@
 #!/usr/bin/env bash
-# Installs the iTerm2 auto tab namer:
-#   1. builds the Swift `tabnamer` binary
-#   2. enables iTerm2's Python API
-#   3. installs zsh shell integration (for cwd + command tracking)
-#   4. links the daemon into iTerm2's AutoLaunch directory
+# Installs the iTerm2 auto tab namer (native, Rosetta-free).
+#
+# iTerm2's bundled Python runtime is x86_64-only, so on Apple Silicon its
+# AutoLaunch scripts need Rosetta. Instead of depending on Rosetta, we run the
+# daemon under a native arm64 Python venv, started by launchd, connecting to
+# iTerm2 over its websocket API (the `iterm2` package fetches an auth cookie via
+# AppleScript on first connect — you'll get a one-time "control iTerm2" prompt).
+#
+# Steps:
+#   1. build the Swift `tabnamer` binary
+#   2. create a native venv and install the `iterm2` package
+#   3. enable iTerm2's Python API
+#   4. install zsh shell integration (for cwd + command tracking)
+#   5. install & load a launchd LaunchAgent that runs the daemon at login
 set -euo pipefail
 
 SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PYTHON="${PYTHON:-/opt/homebrew/bin/python3.13}"
+VENV="$SRC_DIR/.venv"
+LABEL="com.enjoybacon.iterm-tab-namer"
+PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 AUTOLAUNCH="$HOME/Library/Application Support/iTerm2/Scripts/AutoLaunch"
 SHELL_INTEGRATION="$HOME/.iterm2_shell_integration.zsh"
 ZSHRC="$HOME/.zshrc"
@@ -14,6 +27,17 @@ MARKER="# >>> iterm2 shell integration (tab namer) >>>"
 
 echo "==> Building tabnamer (Swift)…"
 swiftc -O "$SRC_DIR/tabnamer.swift" -o "$SRC_DIR/tabnamer"
+
+echo "==> Creating native venv with the iterm2 package…"
+if [ ! -x "$PYTHON" ]; then
+  echo "    ERROR: $PYTHON not found. Install it (e.g. 'brew install python@3.13')"
+  echo "    or set PYTHON=/path/to/python3 and re-run." >&2
+  exit 1
+fi
+"$PYTHON" -m venv "$VENV"
+"$VENV/bin/python" -m pip install --quiet --upgrade pip
+"$VENV/bin/python" -m pip install --quiet iterm2
+echo "    venv: $("$VENV/bin/python" -c 'import platform,sys;print(sys.version.split()[0], platform.machine())')"
 
 echo "==> Enabling iTerm2 Python API…"
 defaults write com.googlecode.iterm2 EnableAPIServer -bool true
@@ -37,18 +61,63 @@ if [ -f "$SHELL_INTEGRATION" ] && ! grep -qF "$MARKER" "$ZSHRC" 2>/dev/null; the
   echo "    added source line to $ZSHRC"
 fi
 
-echo "==> Linking daemon into AutoLaunch…"
-mkdir -p "$AUTOLAUNCH"
-ln -sf "$SRC_DIR/tab_namer.py" "$AUTOLAUNCH/tab_namer.py"
+# Remove any leftover AutoLaunch script from the old (Rosetta-dependent) install.
+if [ -e "$AUTOLAUNCH/tab_namer.py" ]; then
+  echo "==> Removing old AutoLaunch script…"
+  rm -f "$AUTOLAUNCH/tab_namer.py"
+fi
 
-cat <<'DONE'
+echo "==> Installing launchd agent…"
+mkdir -p "$(dirname "$PLIST")"
+cat > "$PLIST" <<PLIST_EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>$LABEL</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>$VENV/bin/python</string>
+        <string>$SRC_DIR/tab_namer.py</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+    <key>StandardOutPath</key>
+    <string>$SRC_DIR/tabnamer.log</string>
+    <key>StandardErrorPath</key>
+    <string>$SRC_DIR/tabnamer.log</string>
+</dict>
+</plist>
+PLIST_EOF
 
-Done. Final manual steps:
-  1. Restart iTerm2 (so it picks up the AutoLaunch script and shell integration).
-  2. The first time the script connects, iTerm2 will ask you to authorize the
-     Python API — click "Allow" (and "Always Allow" to avoid future prompts).
-  3. Open some tabs, run a few commands, and within ~90s they'll start naming
-     themselves. Watch progress/logs in: Scripts > Manage > Console.
+# Reload: bootout if already loaded, then bootstrap into the GUI session.
+GUI="gui/$(id -u)"
+launchctl bootout "$GUI/$LABEL" 2>/dev/null || true
+launchctl bootstrap "$GUI" "$PLIST"
+launchctl kickstart -k "$GUI/$LABEL" 2>/dev/null || true
 
-To stop it: remove "$HOME/Library/Application Support/iTerm2/Scripts/AutoLaunch/tab_namer.py".
+cat <<DONE
+
+Done. The daemon is now running under a native arm64 Python (no Rosetta).
+
+First-run permission:
+  The first time it connects, macOS will ask to let it control iTerm2
+  ("Automation" permission) — click Allow. If no prompt appears, grant it
+  manually in System Settings > Privacy & Security > Automation.
+
+Then:
+  - Open some tabs, run a few commands; within ~90s they'll start naming
+    themselves.
+  - Logs: $SRC_DIR/tabnamer.log
+  - The "Tab Namer" status bar component appears once the daemon connects:
+    Settings > Profiles > Session > Configure Status Bar.
+
+To stop it:
+  launchctl bootout gui/\$(id -u)/$LABEL
+  rm "$PLIST"
 DONE
