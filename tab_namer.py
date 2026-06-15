@@ -94,6 +94,51 @@ def shell_integration_lines(integration_path):
     )
 
 
+def ensure_shell_integration(zshrc_path, integration_path):
+    """Append the marker-guarded block to zshrc if not already present.
+
+    Returns True if the block was added, False if it was already there.
+    Creates the file if it does not exist.
+    """
+    existing = ""
+    if os.path.exists(zshrc_path):
+        with open(zshrc_path, "r", encoding="utf-8") as f:
+            existing = f.read()
+    if SHELL_INTEGRATION_MARKER_START in existing:
+        return False
+    with open(zshrc_path, "a", encoding="utf-8") as f:
+        f.write(shell_integration_lines(integration_path))
+    return True
+
+
+def remove_shell_integration(zshrc_path):
+    """Remove the marker-guarded block from zshrc.
+
+    Returns True if a block was removed, False if none was present (or no file).
+    """
+    if not os.path.exists(zshrc_path):
+        return False
+    with open(zshrc_path, "r", encoding="utf-8") as f:
+        lines = f.readlines()
+    start = end = None
+    for i, line in enumerate(lines):
+        if line.strip() == SHELL_INTEGRATION_MARKER_START:
+            start = i
+        elif line.strip() == SHELL_INTEGRATION_MARKER_END:
+            end = i
+            break
+    if start is None or end is None or end < start:
+        return False
+    # Also drop a single blank separator line immediately before the block.
+    drop_from = start
+    if drop_from > 0 and lines[drop_from - 1].strip() == "":
+        drop_from -= 1
+    del lines[drop_from:end + 1]
+    with open(zshrc_path, "w", encoding="utf-8") as f:
+        f.writelines(lines)
+    return True
+
+
 # Runtime config, seeded from the constants above. The optional status bar
 # component (see register_status_bar) updates this live from iTerm2's
 # "Configure Component" dialog. The daemon works with these defaults even if the

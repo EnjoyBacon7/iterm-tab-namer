@@ -1,6 +1,7 @@
 """Unit tests for the pure logic in tab_namer (no iTerm2 needed)."""
 import os
 import sys
+import tempfile
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -257,6 +258,59 @@ class TestShellIntegrationLines(unittest.TestCase):
         block = tn.shell_integration_lines("/x/.iterm2_shell_integration.zsh")
         self.assertTrue(block.startswith("\n"))
         self.assertTrue(block.endswith("\n"))
+
+
+class TestZshrcBlock(unittest.TestCase):
+    def _tmp(self, contents=""):
+        fd, path = tempfile.mkstemp()
+        with os.fdopen(fd, "w") as f:
+            f.write(contents)
+        self.addCleanup(lambda: os.path.exists(path) and os.remove(path))
+        return path
+
+    def test_ensure_appends_when_absent(self):
+        zshrc = self._tmp("export PATH=/usr/bin\n")
+        added = tn.ensure_shell_integration(zshrc, "/i/.zsh")
+        self.assertTrue(added)
+        with open(zshrc) as f:
+            body = f.read()
+        self.assertIn(tn.SHELL_INTEGRATION_MARKER_START, body)
+        self.assertIn("export PATH=/usr/bin", body)  # preserved
+
+    def test_ensure_is_idempotent(self):
+        zshrc = self._tmp("export PATH=/usr/bin\n")
+        tn.ensure_shell_integration(zshrc, "/i/.zsh")
+        added_again = tn.ensure_shell_integration(zshrc, "/i/.zsh")
+        self.assertFalse(added_again)
+        with open(zshrc) as f:
+            self.assertEqual(f.read().count(tn.SHELL_INTEGRATION_MARKER_START), 1)
+
+    def test_ensure_creates_file_when_missing(self):
+        path = self._tmp()
+        os.remove(path)  # ensure it does not exist
+        added = tn.ensure_shell_integration(path, "/i/.zsh")
+        self.assertTrue(added)
+        self.assertTrue(os.path.exists(path))
+
+    def test_remove_strips_block_and_keeps_rest(self):
+        zshrc = self._tmp("line A\n")
+        tn.ensure_shell_integration(zshrc, "/i/.zsh")
+        removed = tn.remove_shell_integration(zshrc)
+        self.assertTrue(removed)
+        with open(zshrc) as f:
+            body = f.read()
+        self.assertNotIn(tn.SHELL_INTEGRATION_MARKER_START, body)
+        self.assertNotIn(tn.SHELL_INTEGRATION_MARKER_END, body)
+        self.assertIn("line A", body)
+
+    def test_remove_returns_false_when_absent(self):
+        zshrc = self._tmp("nothing here\n")
+        self.assertFalse(tn.remove_shell_integration(zshrc))
+
+    def test_remove_noop_when_file_missing(self):
+        path = self._tmp()
+        os.remove(path)
+        self.assertFalse(tn.remove_shell_integration(path))
 
 
 class _Mode:  # stand-in for iterm2.PromptMonitor.Mode (an enum, never a str)
