@@ -375,23 +375,87 @@ async def git_root(cwd, cache):
     return root
 
 
-async def run_namer(prompt):
-    payload = f"{INSTRUCTIONS}\n{PROMPT_SENTINEL}\n{prompt}"
+def encode_frame(text):
+    r"""Encode a string as a length-prefixed frame: b"<nbytes>\n<bytes>"."""
+    body = text.encode("utf-8")
+    return str(len(body)).encode("ascii") + b"\n" + body
+
+
+async def read_frame(stream):
+    """Read one length-prefixed frame from an asyncio StreamReader.
+
+    Returns the decoded string, or None on EOF / malformed header.
+    """
+    header = await stream.readline()
+    if not header:
+        return None
     try:
-        proc = await asyncio.create_subprocess_exec(
+        n = int(header.strip())
+    except ValueError:
+        return None
+    body = await stream.readexactly(n)
+    return body.decode("utf-8", errors="replace")
+
+
+class NamerProcess:
+    """Owns a single resident `tabnamer` subprocess.
+
+    The helper loads Apple's Foundation Model once and answers framed requests
+    for the daemon's lifetime, so the model never reloads per call. Requests are
+    serialized (the model is one resource) and the process is respawned lazily
+    after any failure.
+    """
+
+    def __init__(self):
+        self._proc = None
+        self._lock = asyncio.Lock()
+
+    async def _ensure(self):
+        if self._proc is not None and self._proc.returncode is None:
+            return self._proc
+        self._proc = await asyncio.create_subprocess_exec(
             NAMER_BIN,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
         )
-        out, _ = await asyncio.wait_for(
-            proc.communicate(payload.encode()), timeout=NAMER_TIMEOUT
-        )
-        if proc.returncode != 0:
-            return ""
-        return out.decode(errors="replace")
-    except Exception:
-        return ""
+        return self._proc
+
+    def _kill(self):
+        proc, self._proc = self._proc, None
+        if proc and proc.returncode is None:
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
+
+    async def ask(self, payload):
+        """Send one framed request, return the raw response string ("" on error)."""
+        async with self._lock:
+            try:
+                proc = await self._ensure()
+                proc.stdin.write(encode_frame(payload))
+                await proc.stdin.drain()
+                result = await asyncio.wait_for(
+                    read_frame(proc.stdout), timeout=NAMER_TIMEOUT
+                )
+                if result is None:  # EOF: the helper died
+                    self._kill()
+                    return ""
+                return result
+            except (asyncio.TimeoutError, BrokenPipeError, ConnectionResetError,
+                    asyncio.IncompleteReadError, OSError) as exc:
+                print(f"namer process error: {exc}")
+                self._kill()
+                return ""
+
+
+_NAMER = NamerProcess()
+
+
+async def run_namer(prompt):
+    payload = f"{INSTRUCTIONS}\n{PROMPT_SENTINEL}\n{prompt}"
+    return await _NAMER.ask(payload)
 
 
 async def monitor_commands(connection, daemon, session_id):

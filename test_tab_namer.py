@@ -232,6 +232,18 @@ class TestRenderTitle(unittest.TestCase):
         )
 
 
+class TestEncodeFrame(unittest.TestCase):
+    def test_roundtrip_ascii(self):
+        self.assertEqual(tn.encode_frame("hello world"), b"11\nhello world")
+
+    def test_multibyte(self):
+        # 'é' is 2 bytes in UTF-8 -> 5 bytes total
+        self.assertEqual(tn.encode_frame("café"), b"5\ncaf\xc3\xa9")
+
+    def test_multiline(self):
+        self.assertEqual(tn.encode_frame("line1\nline2"), b"11\nline1\nline2")
+
+
 class _Mode:  # stand-in for iterm2.PromptMonitor.Mode (an enum, never a str)
     pass
 
