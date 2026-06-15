@@ -1,5 +1,8 @@
 /tabnamer
+/.venv/
+/tabnamer.log
 *.o
 __pycache__/
 *.pyc
 .DS_Store
+/dist/
