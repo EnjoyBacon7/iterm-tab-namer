@@ -60,6 +60,20 @@ class TestIsFreeToName(unittest.TestCase):
         )
 
 
+class TestHasRunningProcess(unittest.TestCase):
+    def test_shell_prompt_is_idle(self):
+        for job in ("zsh", "-zsh", "bash", "-bash", "fish", "login", "", None):
+            self.assertFalse(tn.has_running_process(job), f"shell should be idle: {job!r}")
+
+    def test_real_process_is_running(self):
+        for job in ("vim", "ssh", "node", "npm", "make", "python", "-vim"):
+            self.assertTrue(tn.has_running_process(job), f"should be running: {job!r}")
+
+    def test_case_and_dash_insensitive(self):
+        self.assertFalse(tn.has_running_process("-ZSH"))
+        self.assertFalse(tn.has_running_process("  bash  "))
+
+
 class TestContextSignature(unittest.TestCase):
     def test_changes_with_cwd(self):
         a = tn.context_signature("/a", ["ls"])

@@ -43,8 +43,10 @@ shell integration, and runs the daemon at login via a launchd agent.
 Every `interval` seconds (default 90), the daemon reads each tab's working
 directory and recent commands and asks the on-device model — via the `tabnamer`
 Swift binary, loaded once and kept resident — for a short label, then composes
-the tab name from your `template`. It never overrides a name you set by hand, and
-only renames when a tab's content or siblings change.
+the tab name from your `template`. It never overrides a name you set by hand,
+skips any tab with a foreground process running (its job name — `vim`, `ssh`,
+`npm` — already labels it), and only renames when a tab's content or siblings
+change.
 
 Activity log: `~/.config/iterm-tab-namer/tab-namer.log` — one line per sweep
 (when it renames anything or was manually triggered) and per rename. It's a

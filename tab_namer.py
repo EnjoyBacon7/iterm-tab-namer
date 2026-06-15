@@ -11,6 +11,8 @@ tabs working on the same project but different problems get distinct names.
 Rules:
   - Never overwrite a name a human set by hand: once a tab's name differs from
     what we last set it to, we leave that tab alone for the rest of the session.
+  - Never rename a tab that has a foreground process running: its job name
+    (vim, ssh, npm, …) already labels it well. Naming resumes at the prompt.
   - Only (re)name a tab when its context changed, or when its set of siblings
     changed (so it can differentiate from a newcomer).
 
@@ -55,6 +57,14 @@ OVERRIDE_MANUAL_NAMES = False
 # Names we treat as "not human-set", so we're free to claim the tab. The shell
 # job name and the profile name are added per-session at runtime.
 DEFAULT_NAMES = {"", "zsh", "-zsh", "bash", "-bash", "fish", "Shell", "login"}
+
+# Foreground job names that mean "sitting at a shell prompt" (idle). Anything
+# else as the foreground job is a real running process whose own name (vim, ssh,
+# npm, make, …) is already a good tab label, so we leave such tabs alone.
+SHELL_JOBS = {
+    "sh", "bash", "zsh", "fish", "dash", "ksh", "tcsh", "csh", "ash",
+    "nu", "xonsh", "pwsh", "login", "shell", "",
+}
 
 # Commands that carry no signal about what a tab is for — navigation and
 # housekeeping. A tab whose only activity is these is named after its directory
@@ -457,6 +467,20 @@ def clean_model_label(raw):
     return label
 
 
+def has_running_process(job):
+    """Whether a non-shell foreground process is running in the tab.
+
+    iTerm2 reports the foreground job's name. When that's the login shell the
+    tab is at a prompt (idle) and we may name it; when it's anything else a real
+    process is running and its name already labels the tab well, so we don't ask
+    the model to rename it. Naming resumes once the process exits.
+    """
+    j = (job or "").strip().lstrip("-").lower()
+    if not j:
+        return False
+    return j not in SHELL_JOBS
+
+
 def is_free_to_name(name, job, profile, our_name, override=False):
     """Whether we may set this tab's name.
 
@@ -674,6 +698,10 @@ async def gather_meta(daemon, session):
 
 async def maybe_rename(meta, group):
     st = meta["st"]
+    # A tab running a foreground process already shows that process's name
+    # (vim, ssh, npm, …) — a fine label. Skip it; naming resumes at the prompt.
+    if has_running_process(meta["job"]):
+        return
     if not is_free_to_name(
         meta["name"], meta["job"], meta["profile"], st.our_name,
         override=CONFIG["override"],
