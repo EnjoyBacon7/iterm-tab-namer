@@ -46,7 +46,11 @@ Swift binary, loaded once and kept resident — for a short label, then composes
 the tab name from your `template`. It never overrides a name you set by hand, and
 only renames when a tab's content or siblings change.
 
-Logs (Homebrew service): `/opt/homebrew/var/log/iterm-tab-namer.log`.
+Activity log: `~/.config/iterm-tab-namer/tab-namer.log` — one line per sweep
+(when it renames anything or was manually triggered) and per rename. It's a
+rotating, size-capped file (≈4 MB max), so it can't grow without bound.
+`tail -f` it to watch the daemon work. Crash/stderr output still lands in
+`/opt/homebrew/var/log/iterm-tab-namer.log`.
 
 ## Settings
 
@@ -80,10 +84,13 @@ To watch the renamer act immediately instead of waiting for the next sweep:
 
 ```sh
 iterm-tab-namer trigger
+tail -n 5 ~/.config/iterm-tab-namer/tab-namer.log   # see the sweep it logged
 ```
 
-This asks the running daemon to do one naming pass right now. It works even when
-`enabled` is `false`, so you can test on demand.
+This asks the running daemon to do one naming pass right now and logs a
+`sweep: triggered=True …` line. It works even when `enabled` is `false`, so you
+can test on demand. (A tab only gets a new name when its working dir / recent
+commands / siblings actually changed since the last pass.)
 
 ## Uninstall (manual install)
 

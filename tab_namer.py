@@ -21,11 +21,13 @@ outside iTerm2's runtime for testing.
 
 import asyncio
 import json
+import logging
 import os
 import re
 import signal
 import sys
 from collections import deque
+from logging.handlers import RotatingFileHandler
 
 try:
     import iterm2
@@ -88,6 +90,13 @@ _CONFIG_DIR = os.path.join(
 )
 CONFIG_PATH = os.path.join(_CONFIG_DIR, "config.json")
 PID_PATH = os.path.join(_CONFIG_DIR, "daemon.pid")
+
+# Activity log. A size-capped rotating file (kept small so it can't grow without
+# bound): LOG_BACKUPS old files of up to LOG_MAX_BYTES each are retained and the
+# oldest is discarded on rotation, so total on-disk usage stays ~4 MB.
+LOG_PATH = os.path.join(_CONFIG_DIR, "tab-namer.log")
+LOG_MAX_BYTES = 1_000_000
+LOG_BACKUPS = 3
 
 # The user-settable keys, in display order.
 CONFIG_KEYS = ("enabled", "override", "interval", "template")
@@ -212,6 +221,34 @@ def is_process_alive(pid):
     except OSError:
         return False
     return True
+
+
+_logger = None
+
+
+def _get_logger():
+    """Lazily build a size-capped rotating logger for daemon activity."""
+    global _logger
+    if _logger is None:
+        os.makedirs(os.path.dirname(LOG_PATH), exist_ok=True)
+        lg = logging.getLogger("iterm-tab-namer")
+        lg.setLevel(logging.INFO)
+        lg.propagate = False
+        if not lg.handlers:
+            handler = RotatingFileHandler(
+                LOG_PATH, maxBytes=LOG_MAX_BYTES, backupCount=LOG_BACKUPS
+            )
+            handler.setFormatter(
+                logging.Formatter("%(asctime)s %(message)s", "%Y-%m-%d %H:%M:%S")
+            )
+            lg.addHandler(handler)
+        _logger = lg
+    return _logger
+
+
+def log(msg):
+    """Write a line to the rotating activity log (and stderr for launchd)."""
+    _get_logger().info(msg)
 
 
 # ----------------------------------------------------------------------------
@@ -565,7 +602,7 @@ class NamerProcess:
                 return result
             except (asyncio.TimeoutError, BrokenPipeError, ConnectionResetError,
                     asyncio.IncompleteReadError, OSError) as exc:
-                print(f"namer process error: {exc}")
+                log(f"namer process error: {exc}")
                 self._kill()
                 return ""
 
@@ -595,7 +632,7 @@ async def monitor_commands(connection, daemon, session_id):
     except asyncio.CancelledError:
         raise
     except Exception as exc:  # PromptMonitor may be unsupported; degrade quietly
-        print(f"command monitor ended for {session_id}: {exc}")
+        log(f"command monitor ended for {session_id}: {exc}")
 
 
 def ensure_monitor(connection, daemon, session_id):
@@ -681,14 +718,17 @@ async def maybe_rename(meta, group):
     try:
         await meta["session"].async_set_name(title)
     except Exception as exc:
-        print(f"set_name failed for {meta['sid']}: {exc}")
-        return
+        log(f"set_name failed for {meta['sid']}: {exc}")
+        return False
     st.our_name = title
     st.last_sig = sig
     st.last_sibling_sig = sib_sig
+    log(f'renamed {meta["sid"]}: "{title}"')
+    return True
 
 
 async def sweep(app, daemon):
+    """Name eligible tabs. Returns (renamed_count, candidate_count)."""
     metas = []
     for window in app.windows:
         for tab in window.tabs:
@@ -704,9 +744,12 @@ async def sweep(app, daemon):
         key = meta["root"] or meta["cwd"] or meta["sid"]
         groups.setdefault(key, []).append(meta)
 
+    renamed = 0
     for group in groups.values():
         for meta in group:
-            await maybe_rename(meta, group)
+            if await maybe_rename(meta, group):
+                renamed += 1
+    return renamed, len(metas)
 
 
 async def main(connection):
@@ -714,17 +757,18 @@ async def main(connection):
     daemon = Daemon()
 
     CONFIG.update(load_config(CONFIG_PATH))
+    log(f"daemon started (interval={CONFIG['interval']}s, template={CONFIG['template']!r})")
     try:
         write_pid_file(PID_PATH)
     except OSError as exc:
-        print(f"could not write pid file {PID_PATH}: {exc}")
+        log(f"could not write pid file {PID_PATH}: {exc}")
 
     # `trigger` sends SIGUSR1 to ask for an immediate, off-interval sweep.
     sweep_now = asyncio.Event()
     try:
         asyncio.get_running_loop().add_signal_handler(signal.SIGUSR1, sweep_now.set)
     except (NotImplementedError, ValueError, RuntimeError) as exc:
-        print(f"manual trigger unavailable (no SIGUSR1 handler): {exc}")
+        log(f"manual trigger unavailable (no SIGUSR1 handler): {exc}")
 
     for window in app.windows:
         for tab in window.tabs:
@@ -754,9 +798,11 @@ async def main(connection):
             sweep_now.clear()
             try:
                 if CONFIG["enabled"] or triggered:
-                    await sweep(app, daemon)
+                    renamed, total = await sweep(app, daemon)
+                    if triggered or renamed:
+                        log(f"sweep: triggered={triggered}, renamed {renamed}/{total} tabs")
             except Exception as exc:
-                print(f"sweep error: {exc}")
+                log(f"sweep error: {exc}")
             try:
                 await asyncio.wait_for(sweep_now.wait(), timeout=CONFIG["interval"])
             except asyncio.TimeoutError:

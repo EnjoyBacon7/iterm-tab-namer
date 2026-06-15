@@ -437,6 +437,43 @@ class TestTriggerCli(unittest.TestCase):
         self.assertEqual(received, [1])
 
 
+class TestLogging(unittest.TestCase):
+    def setUp(self):
+        import logging
+        d = tempfile.mkdtemp()
+        self.addCleanup(lambda: __import__("shutil").rmtree(d, ignore_errors=True))
+        self._orig_path = tn.LOG_PATH
+        tn.LOG_PATH = os.path.join(d, "tab-namer.log")
+
+        def reset_logger():
+            lg = logging.getLogger("iterm-tab-namer")
+            for h in list(lg.handlers):
+                h.close()
+                lg.removeHandler(h)
+            tn._logger = None
+
+        reset_logger()
+        self.addCleanup(lambda: setattr(tn, "LOG_PATH", self._orig_path))
+        self.addCleanup(reset_logger)
+
+    def test_log_writes_to_file(self):
+        tn.log("hello world")
+        with open(tn.LOG_PATH) as f:
+            self.assertIn("hello world", f.read())
+
+    def test_handler_is_size_capped(self):
+        tn.log("init")  # builds the logger
+        handlers = [
+            h for h in tn._logger.handlers
+            if isinstance(h, tn.RotatingFileHandler)
+        ]
+        self.assertEqual(len(handlers), 1)
+        self.assertEqual(handlers[0].maxBytes, tn.LOG_MAX_BYTES)
+        self.assertEqual(handlers[0].backupCount, tn.LOG_BACKUPS)
+        self.assertGreater(tn.LOG_MAX_BYTES, 0)
+        self.assertGreater(tn.LOG_BACKUPS, 0)
+
+
 class _Mode:  # stand-in for iterm2.PromptMonitor.Mode (an enum, never a str)
     pass
 
