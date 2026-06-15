@@ -478,18 +478,20 @@ async def maybe_rename(meta, group):
     if not changed:
         return
 
-    # With no real activity yet, name the tab after its folder rather than
-    # asking the model (which produces noise from such thin context). Once
-    # meaningful commands exist, ask the model and fall back to the folder name
-    # if it returns boilerplate or a refusal.
+    # With no real activity yet, leave the task empty so the title collapses to
+    # just the project (asking the model produces noise from such thin context).
+    # Once meaningful commands exist, ask the model for the {task}; if it returns
+    # boilerplate or a refusal the empty task collapses to the project too.
+    project = dir_label
     if not cmds:
-        title = dir_label
+        task = ""
     else:
         prompt = build_prompt(
             build_self_block(cwd, meta["root"], cmds),
             build_sibling_block(sib_pairs),
         )
-        title = clean_model_label(await run_namer(prompt)) or dir_label
+        task = clean_model_label(await run_namer(prompt))
+    title = render_title(CONFIG["template"], project, task)
     if not title:
         return
     try:
