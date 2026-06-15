@@ -1,6 +1,10 @@
 """Unit tests for the pure logic in tab_namer (no iTerm2 needed)."""
+import contextlib
+import io
 import os
+import signal
 import sys
+import tempfile
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -242,6 +246,195 @@ class TestEncodeFrame(unittest.TestCase):
 
     def test_multiline(self):
         self.assertEqual(tn.encode_frame("line1\nline2"), b"11\nline1\nline2")
+
+
+class TestLoadConfig(unittest.TestCase):
+    def _write(self, text):
+        fd, path = tempfile.mkstemp(suffix=".json")
+        with os.fdopen(fd, "w") as f:
+            f.write(text)
+        self.addCleanup(lambda: os.path.exists(path) and os.remove(path))
+        return path
+
+    def test_missing_file_returns_defaults(self):
+        cfg = tn.load_config("/no/such/path/config.json")
+        self.assertEqual(cfg, tn.config_defaults())
+
+    def test_valid_file_overlays_defaults(self):
+        path = self._write('{"template": "{project}", "interval": 120}')
+        cfg = tn.load_config(path)
+        self.assertEqual(cfg["template"], "{project}")
+        self.assertEqual(cfg["interval"], 120)
+        self.assertEqual(cfg["enabled"], True)  # default preserved
+
+    def test_malformed_file_returns_defaults(self):
+        path = self._write("{not valid json")
+        with contextlib.redirect_stdout(io.StringIO()):
+            cfg = tn.load_config(path)
+        self.assertEqual(cfg, tn.config_defaults())
+
+    def test_unknown_keys_ignored(self):
+        path = self._write('{"bogus": 1, "enabled": false}')
+        cfg = tn.load_config(path)
+        self.assertNotIn("bogus", cfg)
+        self.assertEqual(cfg["enabled"], False)
+
+
+class TestSaveConfig(unittest.TestCase):
+    def test_roundtrip_only_known_keys(self):
+        d = tempfile.mkdtemp()
+        self.addCleanup(lambda: __import__("shutil").rmtree(d, ignore_errors=True))
+        path = os.path.join(d, "sub", "config.json")  # dir created on save
+        tn.save_config(path, {"enabled": False, "template": "{task}", "junk": 9})
+        self.assertTrue(os.path.exists(path))
+        cfg = tn.load_config(path)
+        self.assertEqual(cfg["enabled"], False)
+        self.assertEqual(cfg["template"], "{task}")
+        with open(path) as f:
+            self.assertNotIn("junk", f.read())
+
+
+class TestCoerceValue(unittest.TestCase):
+    def test_bools(self):
+        self.assertIs(tn.coerce_value("enabled", "true"), True)
+        self.assertIs(tn.coerce_value("enabled", "FALSE"), False)
+        self.assertIs(tn.coerce_value("override", "on"), True)
+        self.assertIs(tn.coerce_value("override", "0"), False)
+
+    def test_bad_bool(self):
+        with self.assertRaises(ValueError):
+            tn.coerce_value("enabled", "maybe")
+
+    def test_unknown_key(self):
+        with self.assertRaises(ValueError):
+            tn.coerce_value("nope", "x")
+
+    def test_interval_numeric(self):
+        self.assertEqual(tn.coerce_value("interval", "120"), 120.0)
+
+    def test_interval_rejects_below_minimum(self):
+        with self.assertRaises(ValueError):
+            tn.coerce_value("interval", "5")
+
+    def test_interval_rejects_non_number(self):
+        with self.assertRaises(ValueError):
+            tn.coerce_value("interval", "soon")
+
+    def test_template_requires_placeholder(self):
+        with self.assertRaises(ValueError):
+            tn.coerce_value("template", "no placeholders here")
+
+    def test_template_rejects_empty(self):
+        with self.assertRaises(ValueError):
+            tn.coerce_value("template", "   ")
+
+    def test_template_valid(self):
+        self.assertEqual(tn.coerce_value("template", " {project}/{task} "), "{project}/{task}")
+
+
+class TestPidHelpers(unittest.TestCase):
+    def _tmp_path(self):
+        d = tempfile.mkdtemp()
+        self.addCleanup(lambda: __import__("shutil").rmtree(d, ignore_errors=True))
+        return os.path.join(d, "daemon.pid")
+
+    def test_write_then_read(self):
+        path = self._tmp_path()
+        tn.write_pid_file(path)
+        self.assertEqual(tn.read_pid_file(path), os.getpid())
+
+    def test_read_missing_returns_none(self):
+        self.assertIsNone(tn.read_pid_file("/no/such/daemon.pid"))
+
+    def test_read_malformed_returns_none(self):
+        path = self._tmp_path()
+        with open(path, "w") as f:
+            f.write("not-a-pid")
+        self.assertIsNone(tn.read_pid_file(path))
+
+    def test_alive_for_self_dead_for_bogus(self):
+        self.assertTrue(tn.is_process_alive(os.getpid()))
+        self.assertFalse(tn.is_process_alive(999999))
+        self.assertFalse(tn.is_process_alive(None))
+        self.assertFalse(tn.is_process_alive(0))
+
+
+class TestConfigCli(unittest.TestCase):
+    def setUp(self):
+        d = tempfile.mkdtemp()
+        self.addCleanup(lambda: __import__("shutil").rmtree(d, ignore_errors=True))
+        self._orig = tn.CONFIG_PATH
+        tn.CONFIG_PATH = os.path.join(d, "config.json")
+        self.addCleanup(lambda: setattr(tn, "CONFIG_PATH", self._orig))
+
+    def _run(self, argv):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = tn._cli(argv)
+        return rc, out.getvalue(), err.getvalue()
+
+    def test_set_then_get(self):
+        rc, _, _ = self._run(["config", "set", "template", "{project}: {task}"])
+        self.assertEqual(rc, 0)
+        rc, out, _ = self._run(["config", "get", "template"])
+        self.assertEqual(rc, 0)
+        self.assertIn("{project}: {task}", out)
+
+    def test_set_bad_value_exits_2(self):
+        rc, _, err = self._run(["config", "set", "interval", "3"])
+        self.assertEqual(rc, 2)
+        self.assertIn("interval", err)
+
+    def test_set_bad_key_exits_2(self):
+        rc, _, err = self._run(["config", "set", "nope", "x"])
+        self.assertEqual(rc, 2)
+
+    def test_list_shows_all_keys(self):
+        rc, out, _ = self._run(["config", "list"])
+        self.assertEqual(rc, 0)
+        for key in tn.CONFIG_KEYS:
+            self.assertIn(key, out)
+
+    def test_path_prints_config_path(self):
+        rc, out, _ = self._run(["config", "path"])
+        self.assertEqual(rc, 0)
+        self.assertIn(tn.CONFIG_PATH, out)
+
+    def test_unknown_command_exits_2(self):
+        rc, _, _ = self._run(["frobnicate"])
+        self.assertEqual(rc, 2)
+
+
+class TestTriggerCli(unittest.TestCase):
+    def setUp(self):
+        d = tempfile.mkdtemp()
+        self.addCleanup(lambda: __import__("shutil").rmtree(d, ignore_errors=True))
+        self._orig = tn.PID_PATH
+        tn.PID_PATH = os.path.join(d, "daemon.pid")
+        self.addCleanup(lambda: setattr(tn, "PID_PATH", self._orig))
+
+    def _run(self, argv):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = tn._cli(argv)
+        return rc, out.getvalue(), err.getvalue()
+
+    def test_no_daemon_exits_1(self):
+        rc, _, err = self._run(["trigger"])
+        self.assertEqual(rc, 1)
+        self.assertIn("not running", err)
+
+    def test_signals_running_daemon(self):
+        # Stand in as the daemon: install a SIGUSR1 handler, write our PID, and
+        # confirm `trigger` delivers the signal. (Default SIGUSR1 would kill us.)
+        received = []
+        old = signal.signal(signal.SIGUSR1, lambda *a: received.append(1))
+        self.addCleanup(lambda: signal.signal(signal.SIGUSR1, old))
+        tn.write_pid_file(tn.PID_PATH)
+        rc, out, _ = self._run(["trigger"])
+        self.assertEqual(rc, 0)
+        self.assertIn("Triggered", out)
+        self.assertEqual(received, [1])
 
 
 class _Mode:  # stand-in for iterm2.PromptMonitor.Mode (an enum, never a str)

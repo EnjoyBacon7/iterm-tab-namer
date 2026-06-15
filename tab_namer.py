@@ -20,8 +20,11 @@ outside iTerm2's runtime for testing.
 """
 
 import asyncio
+import json
 import os
 import re
+import signal
+import sys
 from collections import deque
 
 try:
@@ -77,10 +80,20 @@ _GARBAGE_SUBSTRINGS = (
 )
 _HOME = os.path.expanduser("~")
 
-# Runtime config, seeded from the constants above. The optional status bar
-# component (see register_status_bar) updates this live from iTerm2's
-# "Configure Component" dialog. The daemon works with these defaults even if the
-# component is never added to a status bar.
+# Config lives in a JSON file the user edits directly or via the `config`
+# subcommand. It is read once at daemon startup (restart to apply changes).
+_CONFIG_DIR = os.path.join(
+    os.environ.get("XDG_CONFIG_HOME", os.path.join(_HOME, ".config")),
+    "iterm-tab-namer",
+)
+CONFIG_PATH = os.path.join(_CONFIG_DIR, "config.json")
+PID_PATH = os.path.join(_CONFIG_DIR, "daemon.pid")
+
+# The user-settable keys, in display order.
+CONFIG_KEYS = ("enabled", "override", "interval", "template")
+
+# Runtime config, seeded from the constants above and overlaid at startup with
+# load_config(CONFIG_PATH).
 CONFIG = {
     "enabled": True,
     "override": OVERRIDE_MANUAL_NAMES,
@@ -88,10 +101,117 @@ CONFIG = {
     "template": TITLE_TEMPLATE,
 }
 
-KNOB_ENABLED = "tabnamer_enabled"
-KNOB_OVERRIDE = "tabnamer_override"
-KNOB_INTERVAL = "tabnamer_interval"
-KNOB_TEMPLATE = "tabnamer_template"
+
+def config_defaults():
+    """The built-in config, used when the file is missing keys."""
+    return {
+        "enabled": True,
+        "override": OVERRIDE_MANUAL_NAMES,
+        "interval": float(INTERVAL),
+        "template": TITLE_TEMPLATE,
+    }
+
+
+def load_config(path):
+    """Return the defaults overlaid with the known keys found in the JSON file.
+
+    A missing file yields the defaults; a malformed file yields the defaults
+    with a warning. Unknown keys in the file are ignored.
+    """
+    cfg = config_defaults()
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except FileNotFoundError:
+        return cfg
+    except (ValueError, OSError) as exc:
+        print(f"config: ignoring {path} ({exc}); using defaults")
+        return cfg
+    if isinstance(data, dict):
+        for k in CONFIG_KEYS:
+            if k in data:
+                cfg[k] = data[k]
+    return cfg
+
+
+def save_config(path, cfg):
+    """Write only the known keys to the JSON file, creating the directory."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    data = {k: cfg[k] for k in CONFIG_KEYS if k in cfg}
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+        f.write("\n")
+
+
+def coerce_value(key, raw):
+    """Convert a CLI string to the typed, validated value for `key`.
+
+    Raises ValueError with a user-facing message on a bad key or value.
+    """
+    if key not in CONFIG_KEYS:
+        raise ValueError(f"unknown key: {key} (valid: {', '.join(CONFIG_KEYS)})")
+    if key in ("enabled", "override"):
+        low = raw.strip().lower()
+        if low in ("true", "1", "yes", "on"):
+            return True
+        if low in ("false", "0", "no", "off"):
+            return False
+        raise ValueError(f"{key} must be true or false")
+    if key == "interval":
+        try:
+            val = float(raw)
+        except ValueError:
+            raise ValueError("interval must be a number")
+        if val < 10:
+            raise ValueError("interval must be >= 10 seconds")
+        return val
+    # template
+    text = raw.strip()
+    if not text:
+        raise ValueError("template must not be empty")
+    if "{project}" not in text and "{task}" not in text:
+        raise ValueError("template must contain {project} and/or {task}")
+    return text
+
+
+def format_value(value):
+    """Render a config value for display (lowercase bools, int-like floats)."""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value)
+
+
+def write_pid_file(path):
+    """Record this process's PID so `trigger` can find the daemon."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(str(os.getpid()))
+
+
+def read_pid_file(path):
+    """Return the PID stored in the file, or None if missing/malformed."""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return int(f.read().strip())
+    except (FileNotFoundError, ValueError, OSError):
+        return None
+
+
+def is_process_alive(pid):
+    """Whether a process with this PID currently exists."""
+    if not pid or pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True  # exists, just not signalable by us
+    except OSError:
+        return False
+    return True
 
 
 # ----------------------------------------------------------------------------
@@ -589,60 +709,22 @@ async def sweep(app, daemon):
             await maybe_rename(meta, group)
 
 
-async def register_status_bar(connection):
-    """Optional: expose settings in iTerm2's native 'Configure Component' dialog.
-
-    Add the "Tab Namer" component to a profile's status bar to get a checkbox
-    for Enabled, a checkbox for overriding manual names, and the sweep interval.
-    The component is just a config host; the daemon runs fine without it.
-
-    It renders an empty string, so once added it takes no visible space in the
-    status bar — but its knobs stay reachable via the gear in iTerm2's
-    "Configure Status Bar" editor. That gives you in-iTerm configuration without
-    a permanent chip. (The component must remain in the layout for the knobs to
-    take effect: `render` is what writes knob values into CONFIG, and it only
-    runs while the component is part of a live status bar.)
-    """
-
-    @iterm2.StatusBarRPC
-    async def render(knobs):
-        CONFIG["enabled"] = bool(knobs.get(KNOB_ENABLED, CONFIG["enabled"]))
-        CONFIG["override"] = bool(knobs.get(KNOB_OVERRIDE, CONFIG["override"]))
-        try:
-            CONFIG["interval"] = max(10.0, float(knobs.get(KNOB_INTERVAL, CONFIG["interval"])))
-        except (TypeError, ValueError):
-            pass
-        template = knobs.get(KNOB_TEMPLATE, CONFIG["template"])
-        if isinstance(template, str) and template.strip():
-            CONFIG["template"] = template
-        # Render nothing: invisible in the status bar, still configurable via the
-        # Configure Status Bar editor's gear.
-        return ""
-
-    try:
-        component = iterm2.StatusBarComponent(
-            short_description="Tab Namer",
-            detailed_description="Auto-rename tabs from their content. Configure behavior here.",
-            knobs=[
-                iterm2.CheckboxKnob("Enabled", True, KNOB_ENABLED),
-                iterm2.CheckboxKnob("Override manually-set names", OVERRIDE_MANUAL_NAMES, KNOB_OVERRIDE),
-                iterm2.PositiveFloatingPointKnob("Sweep interval (seconds)", INTERVAL, KNOB_INTERVAL),
-                iterm2.StringKnob("Title template", "{project} - {task}", TITLE_TEMPLATE, KNOB_TEMPLATE),
-            ],
-            exemplar="🏷 on",
-            update_cadence=None,
-            identifier="com.enjoybacon.iterm-tab-namer",
-        )
-        await component.async_register(connection, render)
-    except Exception as exc:
-        print(f"status bar component registration failed: {exc}")
-
-
 async def main(connection):
     app = await iterm2.async_get_app(connection)
     daemon = Daemon()
 
-    await register_status_bar(connection)
+    CONFIG.update(load_config(CONFIG_PATH))
+    try:
+        write_pid_file(PID_PATH)
+    except OSError as exc:
+        print(f"could not write pid file {PID_PATH}: {exc}")
+
+    # `trigger` sends SIGUSR1 to ask for an immediate, off-interval sweep.
+    sweep_now = asyncio.Event()
+    try:
+        asyncio.get_running_loop().add_signal_handler(signal.SIGUSR1, sweep_now.set)
+    except (NotImplementedError, ValueError, RuntimeError) as exc:
+        print(f"manual trigger unavailable (no SIGUSR1 handler): {exc}")
 
     for window in app.windows:
         for tab in window.tabs:
@@ -664,14 +746,103 @@ async def main(connection):
     asyncio.create_task(watch_new())
     asyncio.create_task(watch_term())
 
-    while True:
+    try:
+        while True:
+            # A manual trigger sweeps even when auto-naming is disabled, so the
+            # user can always test on demand; the timer respects `enabled`.
+            triggered = sweep_now.is_set()
+            sweep_now.clear()
+            try:
+                if CONFIG["enabled"] or triggered:
+                    await sweep(app, daemon)
+            except Exception as exc:
+                print(f"sweep error: {exc}")
+            try:
+                await asyncio.wait_for(sweep_now.wait(), timeout=CONFIG["interval"])
+            except asyncio.TimeoutError:
+                pass
+    finally:
         try:
-            if CONFIG["enabled"]:
-                await sweep(app, daemon)
-        except Exception as exc:
-            print(f"sweep error: {exc}")
-        await asyncio.sleep(CONFIG["interval"])
+            os.remove(PID_PATH)
+        except OSError:
+            pass
 
 
-if __name__ == "__main__" and iterm2 is not None:
+def _cmd_config(argv):
+    """Handle `config get|set|list|path`. Returns a process exit code."""
+    sub = argv[0] if argv else "list"
+    if sub == "path":
+        print(CONFIG_PATH)
+        return 0
+    if sub == "list":
+        cfg = load_config(CONFIG_PATH)
+        for key in CONFIG_KEYS:
+            print(f"{key} = {format_value(cfg[key])}")
+        print(f"# file: {CONFIG_PATH}")
+        return 0
+    if sub == "get":
+        if len(argv) < 2 or argv[1] not in CONFIG_KEYS:
+            print(f"usage: config get <{'|'.join(CONFIG_KEYS)}>", file=sys.stderr)
+            return 2
+        print(format_value(load_config(CONFIG_PATH)[argv[1]]))
+        return 0
+    if sub == "set":
+        if len(argv) < 3:
+            print("usage: config set <key> <value>", file=sys.stderr)
+            return 2
+        try:
+            value = coerce_value(argv[1], argv[2])
+        except ValueError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+        cfg = load_config(CONFIG_PATH)
+        cfg[argv[1]] = value
+        save_config(CONFIG_PATH, cfg)
+        print(f"{argv[1]} = {format_value(value)}")
+        print("Run `brew services restart iterm-tab-namer` to apply.")
+        return 0
+    print(f"unknown config command: {sub} (use get/set/list/path)", file=sys.stderr)
+    return 2
+
+
+def _cmd_trigger():
+    """Ask the running daemon to sweep now. Returns a process exit code."""
+    pid = read_pid_file(PID_PATH)
+    if not is_process_alive(pid):
+        print(
+            "daemon not running — start it with `brew services start iterm-tab-namer`",
+            file=sys.stderr,
+        )
+        return 1
+    try:
+        os.kill(pid, signal.SIGUSR1)
+    except OSError as exc:
+        print(f"could not signal daemon (pid {pid}): {exc}", file=sys.stderr)
+        return 1
+    print("Triggered a naming sweep.")
+    return 0
+
+
+def _cli(argv):
+    """Entry point. Subcommands manage config / trigger; no args runs the daemon."""
+    if argv and argv[0] == "config":
+        return _cmd_config(argv[1:])
+    if argv and argv[0] == "trigger":
+        return _cmd_trigger()
+    if argv:
+        print(
+            f"unknown command: {argv[0]} "
+            "(use `config`, `trigger`, or no arguments to run the daemon)",
+            file=sys.stderr,
+        )
+        return 2
+    if iterm2 is None:
+        print("the 'iterm2' package is not available; cannot run the daemon",
+              file=sys.stderr)
+        return 1
     iterm2.run_forever(main)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(_cli(sys.argv[1:]))

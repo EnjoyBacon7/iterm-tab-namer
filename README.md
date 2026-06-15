@@ -40,26 +40,56 @@ shell integration, and runs the daemon at login via a launchd agent.
 
 ## How it works
 
-Every ~90s, `tab_namer.py` (an iTerm2 AutoLaunch script) reads each tab's working
+Every `interval` seconds (default 90), the daemon reads each tab's working
 directory and recent commands and asks the on-device model — via the `tabnamer`
-Swift binary — for a short label. It never overrides a name you set by hand, and
+Swift binary, loaded once and kept resident — for a short label, then composes
+the tab name from your `template`. It never overrides a name you set by hand, and
 only renames when a tab's content or siblings change.
 
-Logs appear in iTerm2 → Scripts → Manage → Console.
+Logs (Homebrew service): `/opt/homebrew/var/log/iterm-tab-namer.log`.
 
 ## Settings
 
-iTerm2 doesn't let scripts add a Preferences tab, so the live settings are
-exposed through an optional **status bar component**. Add it via Settings →
-Profiles → Session → Status Bar, drag in **Tab Namer**, then click *Configure
-Component* to toggle **Enabled**, **Override manually-set names**, and the
-**sweep interval**. The daemon runs fine with defaults if you never add it.
-
-The remaining knobs are constants at the top of `tab_namer.py`: `MAX_COMMANDS`,
-`MAX_TITLE_LEN` (and the `INTERVAL` / `OVERRIDE_MANUAL_NAMES` defaults).
-
-## Uninstall
+Configure the daemon with the `iterm-tab-namer` CLI. Settings are read at
+startup, so restart the service to apply a change:
 
 ```sh
-rm "$HOME/Library/Application Support/iTerm2/Scripts/AutoLaunch/tab_namer.py"
+iterm-tab-namer config list                        # show settings + file path
+iterm-tab-namer config get template
+iterm-tab-namer config set template "{project} - {task}"
+iterm-tab-namer config set interval 120
+iterm-tab-namer config set enabled false
+brew services restart iterm-tab-namer              # apply
 ```
+
+Settings are stored as JSON at `~/.config/iterm-tab-namer/config.json` (you can
+also edit it by hand). Keys:
+
+- `enabled` (bool) — master on/off
+- `override` (bool) — re-assert names even on tabs you renamed by hand
+- `interval` (number, ≥ 10) — seconds between naming sweeps
+- `template` (string) — final tab name; supports `{project}` and `{task}`,
+  e.g. `{project} - {task}` (default), `{task}`, or `{project}/{task}`
+
+Deeper knobs remain constants at the top of `tab_namer.py`: `MAX_COMMANDS`,
+`MAX_TITLE_LEN`, `MAX_FULL_TITLE_LEN`.
+
+## Testing it (manual trigger)
+
+To watch the renamer act immediately instead of waiting for the next sweep:
+
+```sh
+iterm-tab-namer trigger
+```
+
+This asks the running daemon to do one naming pass right now. It works even when
+`enabled` is `false`, so you can test on demand.
+
+## Uninstall (manual install)
+
+```sh
+launchctl bootout gui/$(id -u)/com.enjoybacon.iterm-tab-namer
+rm "$HOME/Library/LaunchAgents/com.enjoybacon.iterm-tab-namer.plist"
+```
+
+(Homebrew installs uninstall with `brew uninstall iterm-tab-namer`.)
