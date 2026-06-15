@@ -162,6 +162,53 @@ def download_shell_integration(integration_path):
     return result.returncode == 0
 
 
+def cmd_setup(undo=False):
+    """Perform (or reverse) the scriptable environment steps Homebrew can't do.
+
+    Forward: enable iTerm2's API, download shell integration if missing, and add
+    the marker-guarded source line to ~/.zshrc.
+    Undo: remove the marker-guarded block from ~/.zshrc.
+    Returns a process exit code (0 on success).
+    """
+    zshrc = os.path.join(_HOME, ".zshrc")
+    integration = os.path.join(_HOME, ".iterm2_shell_integration.zsh")
+    if undo:
+        removed = remove_shell_integration(zshrc)
+        print("Removed shell-integration block from ~/.zshrc"
+              if removed else "No shell-integration block found in ~/.zshrc")
+        print("Note: iTerm2's API toggle and the downloaded integration file "
+              "are left in place; remove them manually if desired.")
+        return 0
+    enable_iterm_api()
+    print("Enabled iTerm2 Python API.")
+    if download_shell_integration(integration):
+        print(f"Shell integration ready at {integration}")
+    else:
+        print("WARNING: could not download shell integration (offline?). "
+              "Install it later via iTerm2 > Install Shell Integration.")
+    if ensure_shell_integration(zshrc, integration):
+        print("Added shell-integration source line to ~/.zshrc "
+              "(restart your shell).")
+    else:
+        print("~/.zshrc already sources the shell integration.")
+    print("\nNext: `brew services start iterm-tab-namer`, restart iTerm2, and "
+          "click Allow when macOS asks to control iTerm2.")
+    return 0
+
+
+def _cli(argv):
+    """Entry point. `setup`/`setup --undo` run the environment steps; no args
+    runs the daemon (requires the iterm2 package)."""
+    if argv and argv[0] == "setup":
+        return cmd_setup(undo="--undo" in argv[1:])
+    if iterm2 is None:
+        print("the 'iterm2' package is not available; cannot run the daemon",
+              file=sys.stderr)
+        return 1
+    iterm2.run_forever(main)
+    return 0
+
+
 # Runtime config, seeded from the constants above. The optional status bar
 # component (see register_status_bar) updates this live from iTerm2's
 # "Configure Component" dialog. The daemon works with these defaults even if the
@@ -758,5 +805,5 @@ async def main(connection):
         await asyncio.sleep(CONFIG["interval"])
 
 
-if __name__ == "__main__" and iterm2 is not None:
-    iterm2.run_forever(main)
+if __name__ == "__main__":
+    sys.exit(_cli(sys.argv[1:]))

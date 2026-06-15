@@ -313,6 +313,37 @@ class TestZshrcBlock(unittest.TestCase):
         self.assertFalse(tn.remove_shell_integration(path))
 
 
+class TestCli(unittest.TestCase):
+    def test_setup_dispatches_to_cmd_setup(self):
+        calls = []
+        orig = tn.cmd_setup
+        tn.cmd_setup = lambda undo=False: calls.append(undo) or 0
+        try:
+            rc = tn._cli(["setup"])
+        finally:
+            tn.cmd_setup = orig
+        self.assertEqual(rc, 0)
+        self.assertEqual(calls, [False])
+
+    def test_setup_undo_passes_flag(self):
+        calls = []
+        orig = tn.cmd_setup
+        tn.cmd_setup = lambda undo=False: calls.append(undo) or 0
+        try:
+            tn._cli(["setup", "--undo"])
+        finally:
+            tn.cmd_setup = orig
+        self.assertEqual(calls, [True])
+
+    def test_no_args_without_iterm2_errors_cleanly(self):
+        # When the iterm2 package is unavailable, running the daemon returns
+        # nonzero rather than raising.
+        if tn.iterm2 is not None:
+            self.skipTest("iterm2 present in this environment")
+        rc = tn._cli([])
+        self.assertEqual(rc, 1)
+
+
 class _Mode:  # stand-in for iterm2.PromptMonitor.Mode (an enum, never a str)
     pass
 
