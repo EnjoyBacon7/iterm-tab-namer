@@ -186,6 +186,48 @@ class TestCleanModelLabel(unittest.TestCase):
             self.assertEqual(tn.clean_model_label(bad), "", f"should reject: {bad!r}")
 
 
+class TestRenderTitle(unittest.TestCase):
+    def test_both_filled(self):
+        self.assertEqual(
+            tn.render_title("{project} - {task}", "payments-api", "Webhook Retry Fix"),
+            "payments-api - Webhook Retry Fix",
+        )
+
+    def test_empty_task_collapses_separator(self):
+        self.assertEqual(
+            tn.render_title("{project} - {task}", "payments-api", ""),
+            "payments-api",
+        )
+
+    def test_empty_project_collapses_to_task(self):
+        self.assertEqual(
+            tn.render_title("{project} - {task}", "", "Webhook Retry Fix"),
+            "Webhook Retry Fix",
+        )
+
+    def test_both_empty(self):
+        self.assertEqual(tn.render_title("{project} - {task}", "", ""), "")
+
+    def test_collapses_whitespace(self):
+        self.assertEqual(
+            tn.render_title("{project}  -  {task}", "repo", "Do  Thing"),
+            "repo - Do Thing",
+        )
+
+    def test_caps_final_length(self):
+        long_proj = "averylongrepositoryname"
+        out = tn.render_title(
+            "{project} - {task}", long_proj, "Some Very Long Task Description Here"
+        )
+        self.assertLessEqual(len(out), tn.MAX_FULL_TITLE_LEN)
+
+    def test_custom_template(self):
+        self.assertEqual(
+            tn.render_title("{project}/{task}", "repo", "Fix Bug"),
+            "repo/Fix Bug",
+        )
+
+
 class _Mode:  # stand-in for iterm2.PromptMonitor.Mode (an enum, never a str)
     pass
 

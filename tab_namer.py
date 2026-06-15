@@ -32,7 +32,8 @@ except Exception:  # pragma: no cover - only available inside iTerm2's runtime
 # ---- configuration ----
 INTERVAL = 90          # seconds between naming sweeps
 MAX_COMMANDS = 3       # number of recent commands fed to the model
-MAX_TITLE_LEN = 28     # hard cap on the generated label length
+MAX_TITLE_LEN = 28     # hard cap on the model's {task} label length
+MAX_FULL_TITLE_LEN = 48  # hard cap on the final composed "{project} - {task}"
 NAMER_BIN = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tabnamer")
 NAMER_TIMEOUT = 20     # seconds to wait for the model
 
@@ -238,6 +239,33 @@ def directory_label(cwd, project_root):
     if len(base) > MAX_TITLE_LEN:
         base = base[:MAX_TITLE_LEN].rstrip()
     return base
+
+
+def render_title(template, project, task):
+    """Compose the final tab name from a template and its parts.
+
+    Substitutes {project} and {task}. When a value is empty, its placeholder is
+    removed along with an adjoining separator so no dangling separators remain
+    (e.g. "repo - " collapses to "repo"). Whitespace is collapsed and the result
+    is capped at MAX_TITLE_LEN.
+    """
+    out = template
+    # Remove an empty placeholder together with one adjacent separator run.
+    for token, value in (("{project}", project or ""), ("{task}", task or "")):
+        if value:
+            out = out.replace(token, value)
+        else:
+            out = re.sub(
+                r"\s*[-–—:/|]?\s*" + re.escape(token) + r"\s*[-–—:/|]?\s*",
+                " ",
+                out,
+            )
+    out = " ".join(out.split())
+    out = out.strip(" -–—:/|")
+    out = " ".join(out.split())
+    if len(out) > MAX_FULL_TITLE_LEN:
+        out = out[:MAX_FULL_TITLE_LEN].rstrip()
+    return out
 
 
 def clean_model_label(raw):
