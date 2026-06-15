@@ -22,6 +22,8 @@ outside iTerm2's runtime for testing.
 import asyncio
 import os
 import re
+import subprocess
+import sys
 from collections import deque
 
 try:
@@ -137,6 +139,27 @@ def remove_shell_integration(zshrc_path):
     with open(zshrc_path, "w", encoding="utf-8") as f:
         f.writelines(lines)
     return True
+
+
+def enable_iterm_api():
+    """Turn on iTerm2's Python API server (idempotent)."""
+    subprocess.run(
+        ["defaults", "write", "com.googlecode.iterm2", "EnableAPIServer",
+         "-bool", "true"],
+        check=False,
+    )
+
+
+def download_shell_integration(integration_path):
+    """Download iTerm2 zsh shell integration if absent. Returns True on success
+    or if already present; False if the download failed (offline)."""
+    if os.path.exists(integration_path):
+        return True
+    result = subprocess.run(
+        ["curl", "-fsSL", SHELL_INTEGRATION_URL, "-o", integration_path],
+        check=False,
+    )
+    return result.returncode == 0
 
 
 # Runtime config, seeded from the constants above. The optional status bar
