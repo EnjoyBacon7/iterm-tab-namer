@@ -37,6 +37,11 @@ MAX_FULL_TITLE_LEN = 48  # hard cap on the final composed "{project} - {task}"
 NAMER_BIN = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tabnamer")
 NAMER_TIMEOUT = 20     # seconds to wait for the model
 
+# Template for the final tab name. Supported variables: {project} (git repo or
+# folder name, known locally) and {task} (the work label the model generates).
+# An empty variable collapses with its adjoining separator (see render_title).
+TITLE_TEMPLATE = "{project} - {task}"
+
 # When True, manage every tab's name even if a human renamed it (the daemon
 # re-asserts its own name). When False (default), a tab a human renamed is left
 # alone for the rest of the session.
@@ -80,11 +85,13 @@ CONFIG = {
     "enabled": True,
     "override": OVERRIDE_MANUAL_NAMES,
     "interval": INTERVAL,
+    "template": TITLE_TEMPLATE,
 }
 
 KNOB_ENABLED = "tabnamer_enabled"
 KNOB_OVERRIDE = "tabnamer_override"
 KNOB_INTERVAL = "tabnamer_interval"
+KNOB_TEMPLATE = "tabnamer_template"
 
 
 # ----------------------------------------------------------------------------
@@ -540,6 +547,9 @@ async def register_status_bar(connection):
             CONFIG["interval"] = max(10.0, float(knobs.get(KNOB_INTERVAL, CONFIG["interval"])))
         except (TypeError, ValueError):
             pass
+        template = knobs.get(KNOB_TEMPLATE, CONFIG["template"])
+        if isinstance(template, str) and template.strip():
+            CONFIG["template"] = template
         # Render nothing: invisible in the status bar, still configurable via the
         # Configure Status Bar editor's gear.
         return ""
@@ -552,6 +562,7 @@ async def register_status_bar(connection):
                 iterm2.CheckboxKnob("Enabled", True, KNOB_ENABLED),
                 iterm2.CheckboxKnob("Override manually-set names", OVERRIDE_MANUAL_NAMES, KNOB_OVERRIDE),
                 iterm2.PositiveFloatingPointKnob("Sweep interval (seconds)", INTERVAL, KNOB_INTERVAL),
+                iterm2.StringKnob("Title template", "{project} - {task}", TITLE_TEMPLATE, KNOB_TEMPLATE),
             ],
             exemplar="🏷 on",
             update_cadence=None,
