@@ -77,6 +77,23 @@ _GARBAGE_SUBSTRINGS = (
 )
 _HOME = os.path.expanduser("~")
 
+# Marker-guarded block appended to ~/.zshrc by `setup` (matches install.sh so an
+# existing install is recognized and not duplicated). `setup --undo` removes it.
+SHELL_INTEGRATION_MARKER_START = "# >>> iterm2 shell integration (tab namer) >>>"
+SHELL_INTEGRATION_MARKER_END = "# <<< iterm2 shell integration (tab namer) <<<"
+SHELL_INTEGRATION_URL = "https://iterm2.com/shell_integration/zsh"
+
+
+def shell_integration_lines(integration_path):
+    """The marker-guarded zsh block that sources iTerm2 shell integration."""
+    return (
+        "\n"
+        + SHELL_INTEGRATION_MARKER_START + "\n"
+        + f'[ -f "{integration_path}" ] && source "{integration_path}"' + "\n"
+        + SHELL_INTEGRATION_MARKER_END + "\n"
+    )
+
+
 # Runtime config, seeded from the constants above. The optional status bar
 # component (see register_status_bar) updates this live from iTerm2's
 # "Configure Component" dialog. The daemon works with these defaults even if the

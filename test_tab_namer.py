@@ -244,6 +244,21 @@ class TestEncodeFrame(unittest.TestCase):
         self.assertEqual(tn.encode_frame("line1\nline2"), b"11\nline1\nline2")
 
 
+class TestShellIntegrationLines(unittest.TestCase):
+    def test_contains_markers_and_source(self):
+        block = tn.shell_integration_lines("/Users/me/.iterm2_shell_integration.zsh")
+        self.assertIn(tn.SHELL_INTEGRATION_MARKER_START, block)
+        self.assertIn(tn.SHELL_INTEGRATION_MARKER_END, block)
+        self.assertIn(
+            'source "/Users/me/.iterm2_shell_integration.zsh"', block
+        )
+
+    def test_starts_and_ends_with_newline(self):
+        block = tn.shell_integration_lines("/x/.iterm2_shell_integration.zsh")
+        self.assertTrue(block.startswith("\n"))
+        self.assertTrue(block.endswith("\n"))
+
+
 class _Mode:  # stand-in for iterm2.PromptMonitor.Mode (an enum, never a str)
     pass
 
