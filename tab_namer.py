@@ -147,26 +147,25 @@ PROMPT_SENTINEL = "<<<PROMPT>>>"
 # examples are written in the exact format build_self_block/build_prompt emit,
 # which is what keeps this small model on-task.
 INSTRUCTIONS = """\
-You generate a name for a macOS terminal tab. The name tells the user, at a
-glance, what work is happening in that tab.
+You generate a short label describing the WORK happening in a macOS terminal
+tab. Your label is combined by the caller with the project name, so you must
+output ONLY the distinguishing work — never the project or folder name itself.
 
 You receive the tab's working directory and its most recent shell commands, and
 sometimes a list of other tabs in the same project. Infer the SPECIFIC thing
 being worked on — a feature, a bug, a service, a file, a dataset, a deploy — and
-name the tab after that work.
+name that work.
 
 Rules:
 - Output ONLY the label. No preamble, no explanation, no quotes, no
   punctuation, no trailing period.
 - Exactly 2 to 4 words, Title Case. Never a single word.
-- Name the WORK, not the tooling. Prefer "Webhook Retry Fix" over "Running
-  Pytest". Never name it after the shell, the terminal, the directory listing,
-  or the model itself.
+- Name the WORK, not the tooling and not the project name. Prefer "Webhook
+  Retry Fix" over "Running Pytest" and over "Payments Api".
 - Never begin with filler words: Terminal, Directory, Folder, Label, Tab,
   Session, Name, Title, or Running.
 - Stay grounded in what you are given. Do not invent specifics that the
-  directory and commands do not support. When the directory is the only real
-  signal, name the tab after that project or folder.
+  directory and commands do not support.
 - When other tabs are listed, make THIS label clearly distinct from them,
   emphasizing what is unique about this tab's work.
 
@@ -177,14 +176,14 @@ This tab:
   recent commands:
     - pytest tests/test_stripe.py
     - git commit -m "retry failed webhooks"
-Stripe Webhook Retries
+Webhook Retry Fix
 
 This tab:
   directory: blog
   recent commands:
     - npm run build
     - vercel deploy --prod
-Blog Production Deploy
+Production Deploy
 
 This tab:
   directory: kernel (subdir: drivers/net)

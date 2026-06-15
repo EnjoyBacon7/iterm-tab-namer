@@ -122,7 +122,11 @@ class TestInstructions(unittest.TestCase):
         self.assertIn("Output ONLY", ins)
 
     def test_includes_few_shot_examples(self):
-        self.assertIn("Stripe Webhook Retries", tn.INSTRUCTIONS)
+        self.assertIn("Net Driver Debugging", tn.INSTRUCTIONS)
+
+    def test_tells_model_to_omit_project_name(self):
+        ins = tn.INSTRUCTIONS
+        self.assertIn("never the project or folder name", ins.lower())
 
     def test_examples_use_real_input_format(self):
         # Examples must mirror what build_self_block emits, or they mislead.
