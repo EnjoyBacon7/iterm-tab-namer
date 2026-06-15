@@ -4,7 +4,27 @@ Renames iTerm2 tabs based on their content, using Apple's on-device Foundation
 Models (free, private, no API key). Tabs in the same project get distinct names —
 e.g. "Auth Bug" vs "DB Migration" instead of both saying "myapp".
 
-## Install
+## Install (Homebrew — recommended)
+
+```sh
+brew install EnjoyBacon7/tap/iterm-tab-namer
+iterm-tab-namer setup            # one-time: enables iTerm2's API, shell integration, ~/.zshrc
+brew services start iterm-tab-namer
+```
+
+Restart iTerm2, then click **Allow** when macOS asks to control iTerm2.
+
+To stop or remove:
+
+```sh
+brew services stop iterm-tab-namer
+iterm-tab-namer setup --undo     # removes the ~/.zshrc block
+brew uninstall iterm-tab-namer
+```
+
+Requires macOS 26+ on Apple Silicon (the on-device model is arm64-only).
+
+## Manual install (alternative)
 
 ```sh
 ./install.sh
@@ -13,7 +33,7 @@ e.g. "Auth Bug" vs "DB Migration" instead of both saying "myapp".
 Then **restart iTerm2** and click **Allow** when it asks to authorize the Python API.
 
 The installer builds the Swift binary, enables iTerm2's Python API, installs zsh
-shell integration, and links the daemon into iTerm2's AutoLaunch directory.
+shell integration, and runs the daemon at login via a launchd agent.
 
 ## How it works
 
