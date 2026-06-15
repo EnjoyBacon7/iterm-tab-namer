@@ -1,5 +1,14 @@
 # Homebrew Publishing Implementation Plan
 
+> **Superseded 2026-06-15:** Tasks 1–4 (the `iterm-tab-namer setup` subcommand,
+> `.zshrc` editing, shell-integration download, API-toggle, and argv dispatch)
+> were implemented and then **removed** by a later decision: the formula no
+> longer mutates the user's environment at all. Those one-time steps are now
+> done by the user through iTerm2's GUI and listed in the formula `caveats`. The
+> daemon takes no subcommands. Tasks 5–9 (LICENSE, README, formula, tap,
+> release, validation) still apply. See the updated design spec for the current
+> approach: `docs/superpowers/specs/2026-06-11-homebrew-publishing-design.md`.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make `iterm-tab-namer` installable the standard Homebrew way (`brew install`, `brew services`, one `iterm-tab-namer setup` command), retiring the bespoke `install.sh`/plist as the primary path.

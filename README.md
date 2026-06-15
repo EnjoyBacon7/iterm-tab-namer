@@ -8,17 +8,20 @@ e.g. "Auth Bug" vs "DB Migration" instead of both saying "myapp".
 
 ```sh
 brew install EnjoyBacon7/tap/iterm-tab-namer
-iterm-tab-namer setup            # one-time: enables iTerm2's API, shell integration, ~/.zshrc
 brew services start iterm-tab-namer
 ```
 
-Restart iTerm2, then click **Allow** when macOS asks to control iTerm2.
+One-time setup in iTerm2:
+
+1. **Settings → General → Magic →** enable **Python API**.
+2. **iTerm2 menu → Install Shell Integration** (gives the daemon command/cwd
+   tracking; iTerm2 adds the line to your shell config itself).
+3. **Restart iTerm2** and click **Allow** when it asks to control iTerm2.
 
 To stop or remove:
 
 ```sh
 brew services stop iterm-tab-namer
-iterm-tab-namer setup --undo     # removes the ~/.zshrc block
 brew uninstall iterm-tab-namer
 ```
 

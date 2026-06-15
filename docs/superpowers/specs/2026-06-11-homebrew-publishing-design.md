@@ -7,8 +7,16 @@
 
 Make `iterm-tab-namer` installable via Homebrew with a clean, idiomatic
 experience: `brew install` for the files, `brew services` for the login agent,
-and a single `iterm-tab-namer setup` command for the environment steps Homebrew
-cannot perform.
+and a short list of one-time steps the user performs through iTerm2's own GUI
+for the environment changes Homebrew cannot (and should not) perform.
+
+> **Update 2026-06-15:** The original design added an `iterm-tab-namer setup`
+> subcommand that ran `defaults write`, fetched shell integration over the
+> network, and edited `~/.zshrc`. We dropped it. Those side effects all live
+> outside Homebrew's prefix and are already doable through iTerm2's GUI
+> (Settings → enable Python API; iTerm2 menu → Install Shell Integration, which
+> edits the shell rc itself). The formula now just ships the daemon and prints
+> these manual steps in `caveats`. The daemon binary takes no subcommands.
 
 ## Why a custom tap (not homebrew-core)
 
@@ -23,18 +31,20 @@ correct channel. A Cask doesn't fit (no prebuilt `.app`).
   daemon and its `iterm2` dependency into an isolated venv, and managing the
   launchd login agent via a `service` block.
 - **iTerm2's own mechanisms own the app config:** its Python API toggle, its
-  shell-integration installer, its first-connect Automation prompt.
-- **A small, explicit `setup` command owns the two scriptable environment
-  steps** — nothing mutates the user's environment silently or behind a daemon.
+  shell-integration installer (which edits the shell rc itself), its
+  first-connect Automation prompt. The user performs these through iTerm2's GUI.
 
-The macOS Automation permission is a TCC click that cannot be scripted by
-anyone, so a literal "one command, done" was never possible. This design is as
-close to that as the platform allows while staying clean.
+Nothing in the formula mutates the user's environment: no dotfile edits, no
+`defaults write`, no runtime network fetch. The environment steps are listed in
+`caveats` for the user to do via iTerm2. The macOS Automation permission is a
+TCC click that cannot be scripted by anyone, so a literal "one command, done"
+was never possible anyway; keeping the formula prefix-clean is the right trade.
 
 ## Repositories
 
 ### Project repo — `EnjoyBacon7/iterm-tab-namer`
-- Add the `iterm-tab-namer setup` subcommand (see below).
+- No daemon code change is needed: it already runs with no args and resolves the
+  helper binary relative to its own path.
 - Add a `LICENSE` file (MIT).
 - Keep `install.sh` as a non-Homebrew install path; add a README note pointing
   to the Homebrew route as the recommended option.
@@ -88,11 +98,12 @@ class ItermTabNamer < Formula
 
   def caveats
     <<~EOS
-      Finish setup (one time):
-        iterm-tab-namer setup
+      One-time setup in iTerm2:
+        1. Settings > General > Magic > enable "Python API"
+        2. iTerm2 menu > Install Shell Integration
+        3. Restart iTerm2, then click Allow when it asks to control iTerm2.
       Start it at login:
         brew services start iterm-tab-namer
-      Restart iTerm2, then click Allow when macOS asks to control iTerm2.
     EOS
   end
 
@@ -115,44 +126,38 @@ resources` vendors `iterm2` (and its transitive deps) into it — no need to
 restructure the repo into a packaged Python distribution. A thin shell wrapper
 in `bin` execs the venv Python against the daemon script.
 
-## Project change: `iterm-tab-namer setup`
+## Project change: none in the daemon
 
-`tab_namer.py`'s `__main__` currently runs the daemon immediately. Add argv
-dispatch:
+`tab_namer.py`'s `__main__` runs the daemon with no args, which is exactly what
+`brew services` invokes — so no code change is required. The environment steps
+that `install.sh` automates are instead listed in the formula `caveats` for the
+user to perform through iTerm2's GUI:
 
-- **no args** → run the daemon (unchanged; this is what `brew services` calls).
-- **`setup`** → the scriptable environment steps ported from `install.sh`:
-  1. `defaults write com.googlecode.iterm2 EnableAPIServer -bool true`
-  2. download iTerm2 shell integration to `~/.iterm2_shell_integration.zsh` if
-     missing (graceful if offline)
-  3. idempotently append the marker-guarded `source` line to `~/.zshrc`
-- **`setup --undo`** → reverse the above (remove the marker-guarded `.zshrc`
-  block) so teardown is clean, since `brew uninstall` cannot touch dotfiles.
+1. **Enable the Python API:** Settings → General → Magic → "Python API".
+2. **Install shell integration:** iTerm2 menu → Install Shell Integration. This
+   downloads the integration and edits the shell rc itself — iTerm2 owns its own
+   integration, so we don't touch `~/.zshrc`.
+3. **Restart iTerm2 and click Allow** at the first-connect Automation prompt.
 
-The daemon-launch, venv-creation, Swift build, and launchd steps that
-`install.sh` performs are **not** part of `setup` — Homebrew owns those now.
-
-The `iterm2` import in `tab_namer.py` is already guarded, so the `setup` path
-runs without the package present at import time; argv dispatch must occur before
-any `iterm2.run_forever` call.
+Because nothing edits dotfiles or app defaults, `brew uninstall` is a clean
+teardown on its own; there is no `--undo` step to run.
 
 ## Lifecycle
 
-| Action          | Command                                            |
+| Action          | Command / step                                     |
 |-----------------|----------------------------------------------------|
 | Install         | `brew install EnjoyBacon7/tap/iterm-tab-namer`     |
-| Configure env   | `iterm-tab-namer setup` (once) + click Allow       |
+| Configure env   | iTerm2 GUI: enable Python API + Install Shell Integration, restart, click Allow |
 | Run at login    | `brew services start iterm-tab-namer`              |
 | Stop            | `brew services stop iterm-tab-namer`               |
-| Remove          | `iterm-tab-namer setup --undo` then `brew uninstall iterm-tab-namer` |
+| Remove          | `brew uninstall iterm-tab-namer`                   |
 
 ## Validation before publishing
 
 - `brew install --build-from-source EnjoyBacon7/tap/iterm-tab-namer`
 - `brew test iterm-tab-namer`
 - `brew audit --new --strict --online iterm-tab-namer`
-- Existing unit tests (`test_tab_namer.py`) still pass, including any covering
-  the new argv dispatch.
+- Existing unit tests (`test_tab_namer.py`) still pass.
 
 ## Out of scope
 

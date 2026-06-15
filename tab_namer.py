@@ -22,8 +22,6 @@ outside iTerm2's runtime for testing.
 import asyncio
 import os
 import re
-import subprocess
-import sys
 from collections import deque
 
 try:
@@ -78,136 +76,6 @@ _GARBAGE_SUBSTRINGS = (
     "cannot determine", "unable to", "as an ai", "sorry",
 )
 _HOME = os.path.expanduser("~")
-
-# Marker-guarded block appended to ~/.zshrc by `setup` (matches install.sh so an
-# existing install is recognized and not duplicated). `setup --undo` removes it.
-SHELL_INTEGRATION_MARKER_START = "# >>> iterm2 shell integration (tab namer) >>>"
-SHELL_INTEGRATION_MARKER_END = "# <<< iterm2 shell integration (tab namer) <<<"
-SHELL_INTEGRATION_URL = "https://iterm2.com/shell_integration/zsh"
-
-
-def shell_integration_lines(integration_path):
-    """The marker-guarded zsh block that sources iTerm2 shell integration."""
-    return (
-        "\n"
-        + SHELL_INTEGRATION_MARKER_START + "\n"
-        + f'[ -f "{integration_path}" ] && source "{integration_path}"' + "\n"
-        + SHELL_INTEGRATION_MARKER_END + "\n"
-    )
-
-
-def ensure_shell_integration(zshrc_path, integration_path):
-    """Append the marker-guarded block to zshrc if not already present.
-
-    Returns True if the block was added, False if it was already there.
-    Creates the file if it does not exist.
-    """
-    existing = ""
-    if os.path.exists(zshrc_path):
-        with open(zshrc_path, "r", encoding="utf-8") as f:
-            existing = f.read()
-    if SHELL_INTEGRATION_MARKER_START in existing:
-        return False
-    with open(zshrc_path, "a", encoding="utf-8") as f:
-        f.write(shell_integration_lines(integration_path))
-    return True
-
-
-def remove_shell_integration(zshrc_path):
-    """Remove the marker-guarded block from zshrc.
-
-    Returns True if a block was removed, False if none was present (or no file).
-    """
-    if not os.path.exists(zshrc_path):
-        return False
-    with open(zshrc_path, "r", encoding="utf-8") as f:
-        lines = f.readlines()
-    start = end = None
-    for i, line in enumerate(lines):
-        if line.strip() == SHELL_INTEGRATION_MARKER_START:
-            start = i
-        elif line.strip() == SHELL_INTEGRATION_MARKER_END:
-            end = i
-            break
-    if start is None or end is None or end < start:
-        return False
-    # Also drop a single blank separator line immediately before the block.
-    drop_from = start
-    if drop_from > 0 and lines[drop_from - 1].strip() == "":
-        drop_from -= 1
-    del lines[drop_from:end + 1]
-    with open(zshrc_path, "w", encoding="utf-8") as f:
-        f.writelines(lines)
-    return True
-
-
-def enable_iterm_api():
-    """Turn on iTerm2's Python API server (idempotent)."""
-    subprocess.run(
-        ["defaults", "write", "com.googlecode.iterm2", "EnableAPIServer",
-         "-bool", "true"],
-        check=False,
-    )
-
-
-def download_shell_integration(integration_path):
-    """Download iTerm2 zsh shell integration if absent. Returns True on success
-    or if already present; False if the download failed (offline)."""
-    if os.path.exists(integration_path):
-        return True
-    result = subprocess.run(
-        ["curl", "-fsSL", SHELL_INTEGRATION_URL, "-o", integration_path],
-        check=False,
-    )
-    return result.returncode == 0
-
-
-def cmd_setup(undo=False):
-    """Perform (or reverse) the scriptable environment steps Homebrew can't do.
-
-    Forward: enable iTerm2's API, download shell integration if missing, and add
-    the marker-guarded source line to ~/.zshrc.
-    Undo: remove the marker-guarded block from ~/.zshrc.
-    Returns a process exit code (0 on success).
-    """
-    zshrc = os.path.join(_HOME, ".zshrc")
-    integration = os.path.join(_HOME, ".iterm2_shell_integration.zsh")
-    if undo:
-        removed = remove_shell_integration(zshrc)
-        print("Removed shell-integration block from ~/.zshrc"
-              if removed else "No shell-integration block found in ~/.zshrc")
-        print("Note: iTerm2's API toggle and the downloaded integration file "
-              "are left in place; remove them manually if desired.")
-        return 0
-    enable_iterm_api()
-    print("Enabled iTerm2 Python API.")
-    if download_shell_integration(integration):
-        print(f"Shell integration ready at {integration}")
-    else:
-        print("WARNING: could not download shell integration (offline?). "
-              "Install it later via iTerm2 > Install Shell Integration.")
-    if ensure_shell_integration(zshrc, integration):
-        print("Added shell-integration source line to ~/.zshrc "
-              "(restart your shell).")
-    else:
-        print("~/.zshrc already sources the shell integration.")
-    print("\nNext: `brew services start iterm-tab-namer`, restart iTerm2, and "
-          "click Allow when macOS asks to control iTerm2.")
-    return 0
-
-
-def _cli(argv):
-    """Entry point. `setup`/`setup --undo` run the environment steps; no args
-    runs the daemon (requires the iterm2 package)."""
-    if argv and argv[0] == "setup":
-        return cmd_setup(undo="--undo" in argv[1:])
-    if iterm2 is None:
-        print("the 'iterm2' package is not available; cannot run the daemon",
-              file=sys.stderr)
-        return 1
-    iterm2.run_forever(main)
-    return 0
-
 
 # Runtime config, seeded from the constants above. The optional status bar
 # component (see register_status_bar) updates this live from iTerm2's
@@ -805,5 +673,5 @@ async def main(connection):
         await asyncio.sleep(CONFIG["interval"])
 
 
-if __name__ == "__main__":
-    sys.exit(_cli(sys.argv[1:]))
+if __name__ == "__main__" and iterm2 is not None:
+    iterm2.run_forever(main)

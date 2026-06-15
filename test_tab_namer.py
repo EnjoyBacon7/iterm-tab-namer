@@ -1,7 +1,6 @@
 """Unit tests for the pure logic in tab_namer (no iTerm2 needed)."""
 import os
 import sys
-import tempfile
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -243,105 +242,6 @@ class TestEncodeFrame(unittest.TestCase):
 
     def test_multiline(self):
         self.assertEqual(tn.encode_frame("line1\nline2"), b"11\nline1\nline2")
-
-
-class TestShellIntegrationLines(unittest.TestCase):
-    def test_contains_markers_and_source(self):
-        block = tn.shell_integration_lines("/Users/me/.iterm2_shell_integration.zsh")
-        self.assertIn(tn.SHELL_INTEGRATION_MARKER_START, block)
-        self.assertIn(tn.SHELL_INTEGRATION_MARKER_END, block)
-        self.assertIn(
-            'source "/Users/me/.iterm2_shell_integration.zsh"', block
-        )
-
-    def test_starts_and_ends_with_newline(self):
-        block = tn.shell_integration_lines("/x/.iterm2_shell_integration.zsh")
-        self.assertTrue(block.startswith("\n"))
-        self.assertTrue(block.endswith("\n"))
-
-
-class TestZshrcBlock(unittest.TestCase):
-    def _tmp(self, contents=""):
-        fd, path = tempfile.mkstemp()
-        with os.fdopen(fd, "w") as f:
-            f.write(contents)
-        self.addCleanup(lambda: os.path.exists(path) and os.remove(path))
-        return path
-
-    def test_ensure_appends_when_absent(self):
-        zshrc = self._tmp("export PATH=/usr/bin\n")
-        added = tn.ensure_shell_integration(zshrc, "/i/.zsh")
-        self.assertTrue(added)
-        with open(zshrc) as f:
-            body = f.read()
-        self.assertIn(tn.SHELL_INTEGRATION_MARKER_START, body)
-        self.assertIn("export PATH=/usr/bin", body)  # preserved
-
-    def test_ensure_is_idempotent(self):
-        zshrc = self._tmp("export PATH=/usr/bin\n")
-        tn.ensure_shell_integration(zshrc, "/i/.zsh")
-        added_again = tn.ensure_shell_integration(zshrc, "/i/.zsh")
-        self.assertFalse(added_again)
-        with open(zshrc) as f:
-            self.assertEqual(f.read().count(tn.SHELL_INTEGRATION_MARKER_START), 1)
-
-    def test_ensure_creates_file_when_missing(self):
-        path = self._tmp()
-        os.remove(path)  # ensure it does not exist
-        added = tn.ensure_shell_integration(path, "/i/.zsh")
-        self.assertTrue(added)
-        self.assertTrue(os.path.exists(path))
-
-    def test_remove_strips_block_and_keeps_rest(self):
-        zshrc = self._tmp("line A\n")
-        tn.ensure_shell_integration(zshrc, "/i/.zsh")
-        removed = tn.remove_shell_integration(zshrc)
-        self.assertTrue(removed)
-        with open(zshrc) as f:
-            body = f.read()
-        self.assertNotIn(tn.SHELL_INTEGRATION_MARKER_START, body)
-        self.assertNotIn(tn.SHELL_INTEGRATION_MARKER_END, body)
-        self.assertIn("line A", body)
-
-    def test_remove_returns_false_when_absent(self):
-        zshrc = self._tmp("nothing here\n")
-        self.assertFalse(tn.remove_shell_integration(zshrc))
-
-    def test_remove_noop_when_file_missing(self):
-        path = self._tmp()
-        os.remove(path)
-        self.assertFalse(tn.remove_shell_integration(path))
-
-
-class TestCli(unittest.TestCase):
-    def test_setup_dispatches_to_cmd_setup(self):
-        calls = []
-        orig = tn.cmd_setup
-        tn.cmd_setup = lambda undo=False: calls.append(undo) or 0
-        try:
-            rc = tn._cli(["setup"])
-        finally:
-            tn.cmd_setup = orig
-        self.assertEqual(rc, 0)
-        self.assertEqual(calls, [False])
-
-    def test_setup_undo_passes_flag(self):
-        calls = []
-        orig = tn.cmd_setup
-        tn.cmd_setup = lambda undo=False: calls.append(undo) or 0
-        try:
-            tn._cli(["setup", "--undo"])
-        finally:
-            tn.cmd_setup = orig
-        self.assertEqual(calls, [True])
-
-    def test_no_args_without_iterm2_errors_cleanly(self):
-        # When the iterm2 package is unavailable, running the daemon returns
-        # nonzero rather than raising.
-        if tn.iterm2 is not None:
-            self.skipTest("iterm2 present in this environment")
-        rc = tn._cli([])
-        self.assertEqual(rc, 1)
 
 
 class _Mode:  # stand-in for iterm2.PromptMonitor.Mode (an enum, never a str)
